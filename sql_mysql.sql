@@ -1,6 +1,6 @@
 -- ==============================================================
 -- ĐỒ ÁN CHUYÊN ĐỀ PYTHON (COS525) - TRƯỜNG ĐẠI HỌC AN GIANG
--- Đề tài: Xây dựng ứng dụng Quản lý Giáo viên THPT
+-- Đề tài: Xây dựng ứng dụng Quản lý Giáo viên Phổ thông
 -- Nhóm 14 - Tổ 1 - Lớp DH25TH3
 -- Sinh viên: Nguyễn Huỳnh Nhựt Tân (DTH245880) & Nguyễn Trọng Tín (DTH245912)
 -- GVHD: ThS. Nguyễn Ngọc Minh
@@ -13,20 +13,27 @@ COLLATE utf8mb4_unicode_ci;
 
 USE qlgiaovien;
 
--- 1. Bảng Danh mục Tổ chuyên môn
+-- 1. Bảng Tài khoản người dùng (Xác thực & Phân quyền Admin / User)
+CREATE TABLE IF NOT EXISTS TaiKhoan (
+    TenDangNhap VARCHAR(50) PRIMARY KEY,
+    MatKhau VARCHAR(64) NOT NULL,
+    Quyen VARCHAR(20) NOT NULL DEFAULT 'user'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 2. Bảng Danh mục Tổ chuyên môn
 CREATE TABLE IF NOT EXISTS DM_ToChuyenMon (
     MaTo VARCHAR(10) PRIMARY KEY,
     TenTo VARCHAR(100) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 2. Bảng Danh mục Chức vụ & Chế độ giảm trừ (Lưu quy định số tiết giảm)
+-- 3. Bảng Danh mục Chức vụ & Chế độ giảm trừ (Lưu quy định số tiết giảm)
 CREATE TABLE IF NOT EXISTS DM_ChucVu (
     MaCV VARCHAR(10) PRIMARY KEY,
     TenCV VARCHAR(100) NOT NULL,
     SoTietGiam INT DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 3. Bảng Hồ sơ Giáo viên
+-- 4. Bảng Hồ sơ Giáo viên
 CREATE TABLE IF NOT EXISTS HS_GiaoVien (
     MaGV VARCHAR(20) PRIMARY KEY,
     HoTen VARCHAR(100) NOT NULL,
@@ -37,7 +44,7 @@ CREATE TABLE IF NOT EXISTS HS_GiaoVien (
     FOREIGN KEY (MaTo) REFERENCES DM_ToChuyenMon(MaTo) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 4. Bảng Quá trình Kiêm nhiệm (Giải quyết quan hệ Nhiều - Nhiều N-N)
+-- 5. Bảng Quá trình Kiêm nhiệm (Giải quyết quan hệ Nhiều - Nhiều N-N)
 CREATE TABLE IF NOT EXISTS QTr_KiemNhiem (
     MaGV VARCHAR(20),
     MaCV VARCHAR(10),
@@ -50,6 +57,13 @@ CREATE TABLE IF NOT EXISTS QTr_KiemNhiem (
 -- NẠP DỮ LIỆU DANH MỤC BAN ĐẦU (MASTER DATA)
 -- ==============================================================
 
+-- Mật khẩu mặc định '123456' được băm SHA-256 (hashlib.sha256)
+INSERT INTO TaiKhoan (TenDangNhap, MatKhau, Quyen) VALUES
+('admin', SHA2('123456', 256), 'admin'),
+('user',  SHA2('123456', 256), 'user'),
+('gv',    SHA2('123456', 256), 'user')
+ON DUPLICATE KEY UPDATE MatKhau=VALUES(MatKhau), Quyen=VALUES(Quyen);
+
 INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES
 ('TOAN', 'Toán - Tin'),
 ('VAN',  'Ngữ Văn'),
@@ -60,12 +74,11 @@ INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES
 ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo);
 
 INSERT INTO DM_ChucVu (MaCV, TenCV, SoTietGiam) VALUES
-('GV',  'Giáo viên bộ môn',                0),
-('CN',  'Chủ nhiệm lớp',                   4),
-('TT',  'Tổ trưởng chuyên môn',            3),
-('TP',  'Tổ phó chuyên môn',               1),
-('CD',  'Bí thư Đoàn',                     3),
-('CON', 'Giáo viên nữ có con < 12 tháng',  3)
+('CN',  'Chủ nhiệm lớp',                 4),
+('TT',  'Tổ trưởng chuyên môn',          3),
+('TP',  'Tổ phó chuyên môn',             1),
+('CD',  'Bí thư Đoàn',                   3),
+('CON', 'Nữ có con nhỏ < 12 tháng',      3)
 ON DUPLICATE KEY UPDATE TenCV=VALUES(TenCV), SoTietGiam=VALUES(SoTietGiam);
 
 INSERT INTO HS_GiaoVien (MaGV, HoTen, GioiTinh, NgaySinh, MaTo, TrinhDo) VALUES
