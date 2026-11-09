@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS HS_GiaoVien (
     NgaySinh DATE,
     MaTo VARCHAR(10),
     TrinhDo VARCHAR(50),
-    FOREIGN KEY (MaTo) REFERENCES DM_ToChuyenMon(MaTo) ON DELETE SET NULL
+    FOREIGN KEY (MaTo) REFERENCES DM_ToChuyenMon(MaTo) ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 5. Bảng Quá trình Kiêm nhiệm (Giải quyết quan hệ Nhiều - Nhiều N-N)
@@ -49,20 +49,19 @@ CREATE TABLE IF NOT EXISTS QTr_KiemNhiem (
     MaGV VARCHAR(20),
     MaCV VARCHAR(10),
     PRIMARY KEY (MaGV, MaCV),
-    FOREIGN KEY (MaGV) REFERENCES HS_GiaoVien(MaGV) ON DELETE CASCADE,
-    FOREIGN KEY (MaCV) REFERENCES DM_ChucVu(MaCV) ON DELETE CASCADE
+    FOREIGN KEY (MaGV) REFERENCES HS_GiaoVien(MaGV) ON DELETE CASCADE ON UPDATE CASCADE,
+    FOREIGN KEY (MaCV) REFERENCES DM_ChucVu(MaCV) ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ==============================================================
 -- NẠP DỮ LIỆU DANH MỤC BAN ĐẦU (MASTER DATA)
 -- ==============================================================
 
--- Mật khẩu mặc định '123456' được băm SHA-256 (hashlib.sha256)
-INSERT INTO TaiKhoan (TenDangNhap, MatKhau, Quyen) VALUES
+-- Mật khẩu khởi tạo '123456' được băm SHA-256 (có thể đổi mật khẩu trực tiếp trên phần mềm)
+INSERT IGNORE INTO TaiKhoan (TenDangNhap, MatKhau, Quyen) VALUES
 ('admin', SHA2('123456', 256), 'admin'),
 ('user',  SHA2('123456', 256), 'user'),
-('gv',    SHA2('123456', 256), 'user')
-ON DUPLICATE KEY UPDATE MatKhau=VALUES(MatKhau), Quyen=VALUES(Quyen);
+('gv',    SHA2('123456', 256), 'user');
 
 INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES
 ('TOAN', 'Toán - Tin'),

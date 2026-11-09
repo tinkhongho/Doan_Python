@@ -1,113 +1,90 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import csv
-from datetime import datetime, date
+import hashlib
+from datetime import date
 
-# Thư viện kết nối MySQL (cần cài: pip install mysql-connector-python)
 try:
     import mysql.connector
     HAS_MYSQL = True
 except ImportError:
     HAS_MYSQL = False
 
-# Tự động nhận diện tkcalendar nếu máy có cài đặt
 try:
     from tkcalendar import DateEntry
     HAS_TKCALENDAR = True
 except ImportError:
     HAS_TKCALENDAR = False
 
-# ==============================================================================
-# CẤU HÌNH KẾT NỐI MySQL (MySQL Workbench / MySQL Server 8.0)
-# ==============================================================================
+
+# CẤU HÌNH KẾT NỐI MySQL
 DB_HOST = "localhost"
 DB_PORT = 3306
 DB_USER = "root"
-DB_PASS = "admin"          # Đổi thành mật khẩu MySQL Workbench của bạn (VD: admin, root, 123456 hoặc "")
+DB_PASS = "admin"          # Mật khẩu MySQL Workbench của bạn
 DB_NAME = "qlgiaovien"
 
-# ==============================================================================
-# QUẢN LÝ PHIÊN ĐĂNG NHẬP & PHÂN QUYỀN (Mục 3.1.1 Báo cáo)
-# ==============================================================================
-TAI_KHOAN_MAU = {
-    "admin":    {"matkhau": "123456", "vaitro": "Quản trị viên (Hiệu trưởng)", "quyen": "ALL"},
-    "totruong": {"matkhau": "123456", "vaitro": "Tổ trưởng chuyên môn",        "quyen": "MANAGER"},
-    "giaovien": {"matkhau": "123456", "vaitro": "Giáo viên",                   "quyen": "VIEW"},
+LOAI_TRUONG_MAP = {
+    "THPT (17 tiết)":     17,
+    "Nội trú (15 tiết)":  15,
+    "THCS (19 tiết)":     19,
+    "Tiểu học (23 tiết)": 23,
 }
+CURRENT_DINH_MUC = 17
+MA_TIEN_TO = "GV"          
 
-CURRENT_USER = {
-    "username": "admin",
-    "vaitro": "Quản trị viên (Hiệu trưởng)",
-    "quyen": "ALL",
-    "so_lan_sai": 0,
-    "bi_khoa": False
-}
 
-# ==============================================================================
-# 1. HÀM KẾT NỐI & TỰ ĐỘNG KHỞI TẠO CSDL MySQL (4 BẢNG CHUẨN ERD HÌNH 3.2)
-# ==============================================================================
+def ma_hoa_mk(mat_khau):
+    """Mã hóa mk dạng Hash SHA-256"""
+    return hashlib.sha256(mat_khau.encode("utf-8")).hexdigest()
+
+
+# 1. KẾT NỐI, KHỞI TẠO CSDL MySQL
 def get_db_connection():
-    """Trả về đối tượng kết nối MySQL. Trả về None nếu lỗi."""
     if not HAS_MYSQL:
         messagebox.showerror(
             "Thiếu thư viện",
-            "Chưa cài đặt thư viện mysql-connector-python!\n\n"
-            "Mở CMD / PowerShell và chạy lệnh:\n"
-            "pip install mysql-connector-python tkcalendar"
+            "Chưa cài mysql-connector-python!\nChạy lệnh: pip install mysql-connector-python tkcalendar"
         )
         return None
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASS,
-            database=DB_NAME,
-            charset="utf8mb4"
+        return mysql.connector.connect(
+            host=DB_HOST, port=DB_PORT, user=DB_USER,
+            password=DB_PASS, database=DB_NAME, charset="utf8mb4"
         )
-        return conn
     except mysql.connector.Error as e:
-        # Nếu chưa có database qlgiaovien thì tự động tạo database
         if getattr(e, "errno", None) == 1049:
             try:
-                tmp_conn = mysql.connector.connect(
-                    host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS
-                )
-                tmp_cur = tmp_conn.cursor()
-                tmp_cur.execute(
-                    f"CREATE DATABASE IF NOT EXISTS {DB_NAME} "
-                    "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                )
-                tmp_conn.commit()
-                tmp_cur.close()
-                tmp_conn.close()
+                tmp = mysql.connector.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS)
+                cur = tmp.cursor()
+                cur.execute(f"CREATE DATABASE IF NOT EXISTS {DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                tmp.commit()
+                cur.close()
+                tmp.close()
                 return mysql.connector.connect(
                     host=DB_HOST, port=DB_PORT, user=DB_USER,
                     password=DB_PASS, database=DB_NAME, charset="utf8mb4"
                 )
             except mysql.connector.Error as e2:
                 e = e2
-
-        messagebox.showerror(
-            "Lỗi kết nối MySQL",
-            f"Không thể kết nối cơ sở dữ liệu MySQL!\n\n"
-            f"Chi tiết lỗi: {e}\n\n"
-            f"Kiểm tra lại:\n"
-            f"  1. Dịch vụ MySQL Server (MySQL80) đã khởi động chưa?\n"
-            f"  2. Mật khẩu DB_PASS ('{DB_PASS}') trong code đã khớp với MySQL Workbench chưa?\n"
-            f"  3. Đã chạy file 'sql_mysql.sql' trong MySQL Workbench chưa?"
-        )
+        messagebox.showerror("Lỗi kết nối MySQL", f"Không thể kết nối MySQL:\n{e}")
         return None
 
 
 def init_db():
-    """Khởi tạo 4 bảng chuẩn hóa (DM_ToChuyenMon, DM_ChucVu, HS_GiaoVien, QTr_KiemNhiem)."""
     conn = get_db_connection()
     if conn is None:
         return
     cur = conn.cursor()
     try:
-        # 1. Bảng Danh mục Tổ chuyên môn
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS TaiKhoan (
+                TenDangNhap VARCHAR(50) PRIMARY KEY,
+                MatKhau VARCHAR(64) NOT NULL,
+                Quyen VARCHAR(20) NOT NULL DEFAULT 'user'
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS DM_ToChuyenMon (
                 MaTo VARCHAR(10) PRIMARY KEY,
@@ -115,7 +92,6 @@ def init_db():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
 
-        # 2. Bảng Danh mục Chức vụ & Chế độ giảm trừ
         cur.execute("""
             CREATE TABLE IF NOT EXISTS DM_ChucVu (
                 MaCV VARCHAR(10) PRIMARY KEY,
@@ -124,7 +100,6 @@ def init_db():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
 
-        # 3. Bảng Hồ sơ Giáo viên (có cột TrinhDo đúng sơ đồ ERD Hình 3.2)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS HS_GiaoVien (
                 MaGV VARCHAR(20) PRIMARY KEY,
@@ -133,27 +108,34 @@ def init_db():
                 NgaySinh DATE,
                 MaTo VARCHAR(10),
                 TrinhDo VARCHAR(50),
-                FOREIGN KEY (MaTo) REFERENCES DM_ToChuyenMon(MaTo) ON DELETE SET NULL
+                FOREIGN KEY (MaTo) REFERENCES DM_ToChuyenMon(MaTo) ON UPDATE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
 
-        # Đảm bảo cột TrinhDo tồn tại nếu bảng HS_GiaoVien đã được tạo từ phiên bản cũ
         cur.execute("SHOW COLUMNS FROM HS_GiaoVien LIKE 'TrinhDo'")
         if not cur.fetchone():
             cur.execute("ALTER TABLE HS_GiaoVien ADD COLUMN TrinhDo VARCHAR(50) DEFAULT 'Cử nhân Sư phạm'")
 
-        # 4. Bảng Quá trình Kiêm nhiệm (Giải quyết quan hệ N-N)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS QTr_KiemNhiem (
                 MaGV VARCHAR(20),
                 MaCV VARCHAR(10),
                 PRIMARY KEY (MaGV, MaCV),
-                FOREIGN KEY (MaGV) REFERENCES HS_GiaoVien(MaGV) ON DELETE CASCADE,
-                FOREIGN KEY (MaCV) REFERENCES DM_ChucVu(MaCV) ON DELETE CASCADE
+                FOREIGN KEY (MaGV) REFERENCES HS_GiaoVien(MaGV) ON DELETE CASCADE ON UPDATE CASCADE,
+                FOREIGN KEY (MaCV) REFERENCES DM_ChucVu(MaCV) ON UPDATE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
 
-        # Nạp dữ liệu Tổ chuyên môn mẫu
+        mk_bam = ma_hoa_mk("123456")
+        cur.executemany(
+            "INSERT IGNORE INTO TaiKhoan (TenDangNhap, MatKhau, Quyen) VALUES (%s, %s, %s)",
+            [
+                ('admin', mk_bam, 'admin'),
+                ('user',  mk_bam, 'user'),
+                ('gv',    mk_bam, 'user'),
+            ]
+        )
+
         cur.executemany(
             "INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES (%s, %s) "
             "ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo)",
@@ -167,21 +149,18 @@ def init_db():
             ]
         )
 
-        # Nạp dữ liệu Chức vụ & Chế độ giảm trừ mẫu
         cur.executemany(
             "INSERT INTO DM_ChucVu (MaCV, TenCV, SoTietGiam) VALUES (%s, %s, %s) "
             "ON DUPLICATE KEY UPDATE TenCV=VALUES(TenCV), SoTietGiam=VALUES(SoTietGiam)",
             [
-                ('GV',  'Giáo viên bộ môn',               0),
-                ('CN',  'Chủ nhiệm lớp',                  4),
-                ('TT',  'Tổ trưởng chuyên môn',           3),
-                ('TP',  'Tổ phó chuyên môn',              1),
-                ('CD',  'Bí thư Đoàn',                    3),
-                ('CON', 'Giáo viên nữ có con < 12 tháng', 3),
+                ('CN',  'Chủ nhiệm lớp',                 4),
+                ('TT',  'Tổ trưởng chuyên môn',          3),
+                ('TP',  'Tổ phó chuyên môn',             1),
+                ('CD',  'Bí thư Đoàn',                   3),
+                ('CON', 'Nữ có con nhỏ < 12 tháng',      3),
             ]
         )
 
-        # Nạp dữ liệu Giáo viên mẫu nếu bảng rỗng
         cur.execute("SELECT COUNT(*) FROM HS_GiaoVien")
         if cur.fetchone()[0] == 0:
             cur.executemany(
@@ -205,49 +184,65 @@ def init_db():
                     ('GV005', 'CN'),
                 ]
             )
-
         conn.commit()
     except mysql.connector.Error as e:
         conn.rollback()
-        messagebox.showerror("Lỗi khởi tạo CSDL", f"Lỗi khi khởi tạo bảng:\n{e}")
+        messagebox.showerror("Lỗi CSDL", f"Lỗi khởi tạo dữ liệu:\n{e}")
     finally:
         cur.close()
         conn.close()
 
 
-# ==============================================================================
-# 2. HÀM NGHIỆP VỤ TÍNH ĐỊNH MỨC GIỜ DẠY & KIÊM NHIỆM (Chuẩn 17 tiết/tuần)
-# ==============================================================================
-DINH_MUC_CHUAN = 17  # Định mức chuẩn giáo viên THPT công lập: 17 tiết/tuần
+# 2. HÀM XỬ LÝ NGHIỆP VỤ
+def center_window(win, w, h):
+    ws = win.winfo_screenwidth()
+    hs = win.winfo_screenheight()
+    win.geometry(f"{w}x{h}+{(ws - w) // 2}+{(hs - h) // 2}")
 
 
-def lay_ds_to():
-    """Lấy từ điển {MaTo: TenTo} từ CSDL."""
-    ket_qua = {
-        "TOAN": "Toán - Tin", "VAN": "Ngữ Văn", "ANH": "Ngoại Ngữ",
-        "KHTN": "Lý - Hóa - Sinh", "KHXH": "Sử - Địa - GDCD", "VP": "Tổ Văn phòng"
-    }
+def tach_tien_to_va_so(ma):
+    ma = ma.strip().upper()
+    i = 0
+    while i < len(ma) and ma[i].isalpha():
+        i += 1
+    return ma[:i], ma[i:]
+
+
+def lay_tien_to_hien_tai():
     conn = get_db_connection()
     if conn:
         cur = conn.cursor()
         try:
-            cur.execute("SELECT MaTo, TenTo FROM DM_ToChuyenMon")
-            for mato, tento in cur.fetchall():
-                ket_qua[mato] = tento
-        except Exception:
-            pass
+            cur.execute("SELECT MaGV FROM HS_GiaoVien LIMIT 1")
+            row = cur.fetchone()
+            if row and row[0]:
+                tt, _ = tach_tien_to_va_so(str(row[0]))
+                if tt:
+                    return tt
         finally:
             cur.close()
             conn.close()
+    return "GV"
+
+
+def lay_ds_to():
+    ket_qua = {}
+    conn = get_db_connection()
+    if conn:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT MaTo, TenTo FROM DM_ToChuyenMon ORDER BY MaTo")
+            for mato, tento in cur.fetchall():
+                ket_qua[mato] = tento
+        finally:
+            cur.close()
+            conn.close()
+    if not ket_qua:
+        ket_qua = {"TOAN": "Toán - Tin", "VAN": "Ngữ Văn", "ANH": "Ngoại Ngữ"}
     return ket_qua
 
 
 def lay_thong_tin_kiem_nhiem(conn, magv):
-    """
-    Trả về (chuoi_chuc_vu, so_tiet_giam, tiet_thuc_day) của 1 giáo viên
-    dựa trên bảng QTr_KiemNhiem và DM_ChucVu.
-    Quy tắc Bộ GD&ĐT: Nếu kiêm nhiệm nhiều chức vụ (tối đa 2), lấy mức giảm cao nhất.
-    """
     cur = conn.cursor()
     cur.execute("""
         SELECT cv.TenCV, cv.SoTietGiam
@@ -259,38 +254,30 @@ def lay_thong_tin_kiem_nhiem(conn, magv):
     cur.close()
 
     if not ds:
-        return "Giáo viên bộ môn", 0, DINH_MUC_CHUAN
+        return "Không", 0, CURRENT_DINH_MUC
 
-    ten_cac_cv = ", ".join([r[0] for r in ds])
-    # Lấy số tiết giảm lớn nhất trong các chức vụ kiêm nhiệm
-    so_tiet_giam = max([int(r[1] or 0) for r in ds])
-    tiet_thuc_day = DINH_MUC_CHUAN - so_tiet_giam
-    return ten_cac_cv, so_tiet_giam, tiet_thuc_day
+    ten_cv = ", ".join([r[0] for r in ds])
+    giam = max([int(r[1] or 0) for r in ds])
+    thuc_day = max(0, CURRENT_DINH_MUC - giam)
+    return ten_cv, giam, thuc_day
 
 
 def format_date_vn(ngaysinh):
-    """Chuyển ngày YYYY-MM-DD sang DD/MM/YYYY để hiển thị chuẩn Việt Nam."""
     if not ngaysinh:
         return ""
-    try:
-        parts = str(ngaysinh).split("-")
-        if len(parts) == 3:
-            return f"{parts[2]}/{parts[1]}/{parts[0]}"
-    except Exception:
-        pass
+    parts = str(ngaysinh).split("-")
+    if len(parts) == 3:
+        return f"{parts[2]}/{parts[1]}/{parts[0]}"
     return str(ngaysinh)
 
 
-# ==============================================================================
-# 3. HÀM XUẤT BÁO CÁO RA FILE EXCEL CSV (Thư viện csv chuẩn Chương 6)
-# ==============================================================================
 def xuat_excel(parent_win=None):
     file_path = filedialog.asksaveasfilename(
         parent=parent_win,
         defaultextension=".csv",
-        filetypes=[("Tập tin Excel CSV (*.csv)", "*.csv"), ("Tất cả tập tin", "*.*")],
+        filetypes=[("Excel CSV (*.csv)", "*.csv"), ("Tất cả tập tin", "*.*")],
         initialfile="DanhSach_GiaoVien.csv",
-        title="Lưu báo cáo danh sách giáo viên ra Excel"
+        title="Xuất danh sách giáo viên"
     )
     if not file_path:
         return
@@ -306,348 +293,681 @@ def xuat_excel(parent_win=None):
         rows = cur.fetchall()
         cur.close()
 
-        # utf-8-sig giúp mở trực tiếp bằng Microsoft Excel không bị lỗi font tiếng Việt
         with open(file_path, mode="w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "Mã GV", "Họ và Tên", "Phái", "Ngày Sinh",
-                "Tổ Chuyên Môn", "Trình Độ", "Chức Vụ / Kiêm Nhiệm",
-                "Định Mức Chuẩn", "Số Tiết Giảm", "Tiết Thực Dạy/Tuần"
+                "Mã GV", "Họ và Tên", "Giới Tính", "Ngày Sinh",
+                "Tổ Chuyên Môn", "Trình Độ", "Kiêm Nhiệm",
+                "Tiết Chuẩn", "Tiết Giảm", "Tiết Thực Dạy"
             ])
-            for r in rows:
-                magv, hoten, phai, ngaysinh, mato, trinhdo = r
+            for magv, hoten, phai, ngaysinh, mato, trinhdo in rows:
                 tento = to_map.get(mato, mato)
                 td = trinhdo if trinhdo else "Cử nhân Sư phạm"
                 cv_str, giam, day = lay_thong_tin_kiem_nhiem(conn, magv)
-                ns_vn = format_date_vn(ngaysinh)
-                writer.writerow([magv, hoten, phai, ns_vn, tento, td, cv_str, DINH_MUC_CHUAN, giam, day])
-
+                writer.writerow([
+                    magv, hoten, phai, format_date_vn(ngaysinh),
+                    tento, td, cv_str, CURRENT_DINH_MUC, giam, day
+                ])
         conn.close()
-        messagebox.showinfo(
-            "Xuất báo cáo thành công",
-            f"Đã kết xuất dữ liệu thành công ra tập tin:\n{file_path}\n\n"
-            "(Mở trực tiếp bằng Microsoft Excel)",
-            parent=parent_win
-        )
+        messagebox.showinfo("Thành công", f"Đã xuất file:\n{file_path}", parent=parent_win)
     except Exception as e:
         conn.close()
-        messagebox.showerror("Lỗi xuất file", f"Không thể xuất file Excel CSV:\n{e}", parent=parent_win)
+        messagebox.showerror("Lỗi", f"Không thể xuất file:\n{e}", parent=parent_win)
 
 
-# ==============================================================================
-# 4. GIAO DIỆN CHÍNH (CỬA SỔ CHỦ THEO MẪU ẢNH CỦA THẦY MINH)
-# ==============================================================================
-root = tk.Tk()
-root.title("Quản lý giáo viên")
-root.geometry("820x540")
-root.resizable(False, False)
+# 3. CỬA SỔ CHÍNH & CÁC CỬA SỔ NGHIỆP VỤ
+def mo_man_hinh_chinh(role="admin", username="admin"):
+    global CURRENT_DINH_MUC, MA_TIEN_TO, to_map, rev_to_map, ds_ten_to
+    root = tk.Tk()
+    ten_quyen = "Quản trị viên (Admin)" if role == "admin" else "Giáo viên (User - Chỉ xem)"
+    root.title(f"Phần mềm Quản lý Giáo viên Phổ thông - [{username} | {ten_quyen}]")
+    center_window(root, 980, 600)
+    root.resizable(False, False)
 
-
-def center_window(win, w=820, h=540):
-    """Canh giữa cửa sổ trên màn hình."""
-    ws = win.winfo_screenwidth()
-    hs = win.winfo_screenheight()
-    x = (ws // 2) - (w // 2)
-    y = (hs // 2) - (h // 2)
-    win.geometry(f"{w}x{h}+{x}+{y}")
-
-
-center_window(root, 820, 540)
-
-# Màn hình chính giới thiệu (Khớp ảnh bìa mẫu của Thầy Nguyễn Ngọc Minh)
-frame_main_cover = tk.Frame(root, bg="#f5f5f5")
-frame_main_cover.pack(fill="both", expand=True)
-
-tk.Label(frame_main_cover, text="BÁO CÁO ĐỒ ÁN",
-         font=("Arial", 22, "bold"), bg="#f5f5f5", fg="#111").pack(pady=(40, 5))
-tk.Label(frame_main_cover, text="Chuyên đề Python (COS525)",
-         font=("Arial", 18, "bold"), bg="#f5f5f5", fg="#222").pack(pady=(0, 20))
-
-tk.Label(frame_main_cover, text="Đề tài: XÂY DỰNG ỨNG DỤNG QUẢN LÝ GIÁO VIÊN",
-         font=("Arial", 16, "bold"), bg="#f5f5f5", fg="#0d47a1").pack()
-tk.Label(frame_main_cover, text="VỚI PYTHON, TKINTER VÀ MySQL",
-         font=("Arial", 16, "bold"), bg="#f5f5f5", fg="#0d47a1").pack(pady=(2, 30))
-
-tk.Label(frame_main_cover, text="Giảng viên hướng dẫn",
-         font=("Arial", 11, "italic"), bg="#f5f5f5").pack()
-tk.Label(frame_main_cover, text="Ths. Nguyễn Ngọc Minh - Khoa CNTT - Trường ĐHAG",
-         font=("Arial", 11, "bold"), bg="#f5f5f5").pack(pady=(2, 18))
-
-tk.Label(frame_main_cover,
-         text="Sinh viên thực hiện:    Nguyễn Huỳnh Nhựt Tân  -  MSSV: DTH245880",
-         font=("Arial", 11), bg="#f5f5f5").pack(pady=2)
-tk.Label(frame_main_cover,
-         text="Sinh viên thực hiện:    Nguyễn Trọng Tín  -  MSSV: DTH245912",
-         font=("Arial", 11), bg="#f5f5f5").pack(pady=2)
-
-lbl_trangthai_user = tk.Label(
-    frame_main_cover,
-    text=f"Phiên đăng nhập: {CURRENT_USER['username']} — Vai trò: {CURRENT_USER['vaitro']}",
-    font=("Arial", 10, "bold"), bg="#f5f5f5", fg="#1b5e20"
-)
-lbl_trangthai_user.pack(pady=(20, 4))
-
-tk.Label(frame_main_cover, text="Cơ sở dữ liệu: MySQL (qlgiaovien) — Quản trị bằng MySQL Workbench",
-         font=("Arial", 10, "italic"), bg="#f5f5f5", fg="#555").pack(pady=(2, 10))
-
-
-def cap_nhat_nhan_user():
-    if CURRENT_USER["username"]:
-        lbl_trangthai_user.config(
-            text=f"Phiên đăng nhập: {CURRENT_USER['username']} — Vai trò: {CURRENT_USER['vaitro']}",
-            fg="#1b5e20"
-        )
-    else:
-        lbl_trangthai_user.config(
-            text="Trạng thái: Chưa đăng nhập (Vui lòng chọn Chương trình -> Đăng nhập)",
-            fg="#c62828"
-        )
-
-
-def kiem_tra_quyen_ghi(parent_win):
-    """Kiểm tra phân quyền trước khi Thêm/Sửa/Xóa."""
-    if not CURRENT_USER["username"]:
-        messagebox.showwarning("Chưa đăng nhập", "Vui lòng đăng nhập hệ thống trước khi thao tác!", parent=parent_win)
-        return False
-    if CURRENT_USER["quyen"] == "VIEW":
-        messagebox.showwarning(
-            "Phân quyền truy cập",
-            f"Tài khoản '{CURRENT_USER['username']}' ({CURRENT_USER['vaitro']}) chỉ có quyền tra cứu và xem báo cáo!\n"
-            "Chỉ Quản trị viên (Hiệu trưởng) hoặc Tổ trưởng mới có quyền cập nhật dữ liệu.",
-            parent=parent_win
-        )
-        return False
-    return True
-
-
-# ==============================================================================
-# 5. CỬA SỔ ĐĂNG NHẬP & PHÂN QUYỀN (Mục 3.1.1 - Khóa sau 5 lần nhập sai)
-# ==============================================================================
-def open_dangnhap():
-    win = tk.Toplevel(root)
-    win.title("Đăng nhập hệ thống")
-    center_window(win, 420, 290)
-    win.resizable(False, False)
-    win.grab_set()
-    win.focus_set()
-
-    tk.Label(win, text="ĐĂNG NHẬP HỆ THỐNG", font=("Arial", 13, "bold"), fg="#0d47a1").pack(pady=(15, 5))
-    tk.Label(win, text="(Tài khoản mẫu: admin / totruong / giaovien — Mật khẩu: 123456)",
-             font=("Arial", 8, "italic"), fg="#555").pack(pady=(0, 10))
-
-    f_form = tk.Frame(win, padx=20, pady=5)
-    f_form.pack(fill="x")
-
-    tk.Label(f_form, text="Tên đăng nhập:").grid(row=0, column=0, padx=5, pady=8, sticky="w")
-    entry_user = ttk.Combobox(f_form, values=["admin", "totruong", "giaovien"], width=22)
-    entry_user.set("admin")
-    entry_user.grid(row=0, column=1, padx=5, pady=8, sticky="w")
-
-    tk.Label(f_form, text="Mật khẩu:").grid(row=1, column=0, padx=5, pady=8, sticky="w")
-    entry_pass = tk.Entry(f_form, width=25, show="*")
-    entry_pass.insert(0, "123456")
-    entry_pass.grid(row=1, column=1, padx=5, pady=8, sticky="w")
-
-    lbl_canhbao = tk.Label(win, text="", font=("Arial", 9, "italic"), fg="#c62828")
-    lbl_canhbao.pack(pady=4)
-
-    def xu_ly_login():
-        if CURRENT_USER["bi_khoa"]:
-            messagebox.showerror(
-                "Tài khoản bị khóa",
-                "Tài khoản đã bị khóa tạm thời do nhập sai mật khẩu quá 5 lần!",
-                parent=win
-            )
-            return
-
-        u = entry_user.get().strip()
-        p = entry_pass.get().strip()
-
-        if u in TAI_KHOAN_MAU and TAI_KHOAN_MAU[u]["matkhau"] == p:
-            CURRENT_USER["username"] = u
-            CURRENT_USER["vaitro"] = TAI_KHOAN_MAU[u]["vaitro"]
-            CURRENT_USER["quyen"] = TAI_KHOAN_MAU[u]["quyen"]
-            CURRENT_USER["so_lan_sai"] = 0
-            cap_nhat_nhan_user()
-            messagebox.showinfo(
-                "Đăng nhập thành công",
-                f"Xin chào {u}!\nVai trò phân quyền: {CURRENT_USER['vaitro']}",
-                parent=win
-            )
-            win.destroy()
-        else:
-            CURRENT_USER["so_lan_sai"] += 1
-            con_lai = 5 - CURRENT_USER["so_lan_sai"]
-            if CURRENT_USER["so_lan_sai"] >= 5:
-                CURRENT_USER["bi_khoa"] = True
-                btn_submit.config(state="disabled")
-                lbl_canhbao.config(text="Đã khóa đăng nhập do nhập sai quá 5 lần!")
-                messagebox.showerror(
-                    "Khóa tài khoản",
-                    "Bạn đã nhập sai mật khẩu 5 lần liên tiếp!\n"
-                    "Hệ thống tự động khóa chức năng đăng nhập để bảo vệ dữ liệu.",
-                    parent=win
-                )
-            else:
-                lbl_canhbao.config(text=f"Sai mật khẩu! Còn {con_lai} lần thử trước khi khóa.")
-                messagebox.showwarning(
-                    "Sai thông tin",
-                    f"Tên đăng nhập hoặc mật khẩu không đúng!\n(Số lần sai: {CURRENT_USER['so_lan_sai']}/5)",
-                    parent=win
-                )
-
-    f_btn = tk.Frame(win)
-    f_btn.pack(pady=10)
-    btn_submit = tk.Button(f_btn, text="Đăng nhập", width=12, bg="#0d47a1", fg="white",
-                           font=("Arial", 9, "bold"), command=xu_ly_login)
-    btn_submit.pack(side="left", padx=6)
-    tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=6)
-
-    if CURRENT_USER["bi_khoa"]:
-        btn_submit.config(state="disabled")
-        lbl_canhbao.config(text="Tài khoản đang bị khóa do nhập sai 5 lần!")
-
-
-def xu_ly_dangxuat():
-    if messagebox.askyesno("Đăng xuất", "Bạn có muốn đăng xuất khỏi phiên làm việc hiện tại?", parent=root):
-        CURRENT_USER["username"] = ""
-        CURRENT_USER["vaitro"] = "Chưa đăng nhập"
-        CURRENT_USER["quyen"] = "NONE"
-        cap_nhat_nhan_user()
-        open_dangnhap()
-
-
-# Cơ chế tự động đăng xuất sau 15 phút (900.000 ms) nhàn rỗi đúng Mục 3.1.1
-IDLE_TIMEOUT_MS = 15 * 60 * 1000
-_idle_timer_id = None
-
-
-def _reset_idle_timer(event=None):
-    global _idle_timer_id
-    if _idle_timer_id is not None:
-        root.after_cancel(_idle_timer_id)
-    _idle_timer_id = root.after(IDLE_TIMEOUT_MS, _auto_logout_idle)
-
-
-def _auto_logout_idle():
-    if CURRENT_USER["username"]:
-        CURRENT_USER["username"] = ""
-        CURRENT_USER["vaitro"] = "Chưa đăng nhập"
-        CURRENT_USER["quyen"] = "NONE"
-        cap_nhat_nhan_user()
-        messagebox.showinfo(
-            "Tự động đăng xuất",
-            "Phiên làm việc đã tự động đăng xuất sau 15 phút nhàn rỗi để bảo vệ dữ liệu!",
-            parent=root
-        )
-
-
-root.bind_all("<Any-KeyPress>", _reset_idle_timer)
-root.bind_all("<Any-ButtonPress>", _reset_idle_timer)
-_reset_idle_timer()
-
-
-# ==============================================================================
-# 6. CÁC CỬA SỔ CHỨC NĂNG THEO MENU (CHẾ ĐỘ MODAL DIALOG)
-# ==============================================================================
-
-# --- CỬA SỔ 1: DANH MỤC -> NHÂN VIÊN / GIÁO VIÊN ---
-def open_quanly_giaovien():
-    win = tk.Toplevel(root)
-    win.title("Danh mục Hồ sơ Giáo viên")
-    center_window(win, 980, 620)
-    win.grab_set()
-    win.focus_set()
-
+    MA_TIEN_TO = lay_tien_to_hien_tai()
     to_map = lay_ds_to()
     rev_to_map = {v: k for k, v in to_map.items()}
     ds_ten_to = list(to_map.values())
 
-    tk.Label(win, text="QUẢN LÝ HỒ SƠ GIÁO VIÊN THPT",
-             font=("Arial", 14, "bold"), fg="#0d47a1").pack(pady=6)
+    # CÁC CỬA SỔ CON: ĐỔI MẬT KHẨU, QUẢN LÝ TÀI KHOẢN, DANH MỤC TỔ, CHỨC VỤ
+    def open_doi_mat_khau():
+        win = tk.Toplevel(root)
+        win.title("Đổi mật khẩu")
+        center_window(win, 360, 210)
+        win.grab_set()
+        win.focus_set()
 
-    # Khung nhập liệu
-    frame_info = tk.LabelFrame(win, text=" Thông tin hồ sơ giáo viên ",
-                               font=("Arial", 9, "bold"), padx=10, pady=6)
-    frame_info.pack(fill="x", padx=10, pady=4)
+        f = tk.Frame(win, padx=16, pady=12)
+        f.pack(fill="both", expand=True)
 
-    tk.Label(frame_info, text="Mã GV (*):").grid(row=0, column=0, padx=5, pady=4, sticky="w")
+        tk.Label(f, text=f"Tài khoản: {username}", font=("Arial", 9, "bold"), fg="#0d47a1").grid(
+            row=0, column=0, columnspan=2, pady=(0, 8), sticky="w"
+        )
+
+        tk.Label(f, text="Mật khẩu hiện tại:").grid(row=1, column=0, pady=4, sticky="w")
+        e_cu = tk.Entry(f, width=20, show="*")
+        e_cu.grid(row=1, column=1, pady=4, padx=6)
+
+        tk.Label(f, text="Mật khẩu mới:").grid(row=2, column=0, pady=4, sticky="w")
+        e_moi = tk.Entry(f, width=20, show="*")
+        e_moi.grid(row=2, column=1, pady=4, padx=6)
+
+        tk.Label(f, text="Nhập lại mật khẩu:").grid(row=3, column=0, pady=4, sticky="w")
+        e_xn = tk.Entry(f, width=20, show="*")
+        e_xn.grid(row=3, column=1, pady=4, padx=6)
+
+        def luu_mk():
+            mk_cu = e_cu.get().strip()
+            mk_moi = e_moi.get().strip()
+            mk_xn = e_xn.get().strip()
+            if not mk_cu or not mk_moi or not mk_xn:
+                messagebox.showwarning("Chú ý", "Vui lòng nhập đầy đủ các trường!", parent=win)
+                return
+            if mk_moi != mk_xn:
+                messagebox.showwarning("Không khớp", "Mật khẩu mới nhập lại không khớp!", parent=win)
+                return
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT MatKhau FROM TaiKhoan WHERE TenDangNhap=%s", (username,))
+                row = cur.fetchone()
+                if not row or row[0] != ma_hoa_mk(mk_cu):
+                    messagebox.showerror("Lỗi", "Mật khẩu hiện tại không đúng!", parent=win)
+                    return
+                cur.execute(
+                    "UPDATE TaiKhoan SET MatKhau=%s WHERE TenDangNhap=%s",
+                    (ma_hoa_mk(mk_moi), username)
+                )
+                conn.commit()
+                messagebox.showinfo("Thành công", "Đã đổi mật khẩu thành công!", parent=win)
+                win.destroy()
+            finally:
+                cur.close()
+                conn.close()
+
+        f_b = tk.Frame(f)
+        f_b.grid(row=4, column=0, columnspan=2, pady=10)
+        tk.Button(f_b, text="Lưu", width=10, command=luu_mk).pack(side="left", padx=4)
+        tk.Button(f_b, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=4)
+
+    def open_quanly_taikhoan():
+        win = tk.Toplevel(root)
+        win.title("Quản lý tài khoản")
+        center_window(win, 520, 380)
+        win.grab_set()
+        win.focus_set()
+
+        f_form = tk.LabelFrame(win, text=" Thông tin tài khoản ", padx=10, pady=6)
+        f_form.pack(fill="x", padx=12, pady=8)
+
+        tk.Label(f_form, text="Tài khoản:").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        e_tk = tk.Entry(f_form, width=14)
+        e_tk.grid(row=0, column=1, padx=4, pady=4)
+
+        tk.Label(f_form, text="Mật khẩu:").grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        e_mk = tk.Entry(f_form, width=14, show="*")
+        e_mk.grid(row=0, column=3, padx=4, pady=4)
+
+        tk.Label(f_form, text="Quyền:").grid(row=0, column=4, padx=4, pady=4, sticky="w")
+        cbb_quyen = ttk.Combobox(f_form, values=["user", "admin"], width=8, state="readonly")
+        cbb_quyen.current(0)
+        cbb_quyen.grid(row=0, column=5, padx=4, pady=4)
+
+        f_tree = tk.Frame(win)
+        f_tree.pack(fill="both", expand=True, padx=12, pady=4)
+        tree_tk = ttk.Treeview(f_tree, columns=("tk", "quyen"), show="headings", height=8)
+        tree_tk.heading("tk", text="Tên Đăng Nhập")
+        tree_tk.heading("quyen", text="Quyền Hạn")
+        tree_tk.column("tk", width=260)
+        tree_tk.column("quyen", width=180, anchor="center")
+        tree_tk.pack(fill="both", expand=True)
+
+        def load_tk():
+            for i in tree_tk.get_children():
+                tree_tk.delete(i)
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT TenDangNhap, Quyen FROM TaiKhoan ORDER BY TenDangNhap")
+                for r in cur.fetchall():
+                    tree_tk.insert("", tk.END, values=r)
+                cur.close()
+                conn.close()
+
+        def chon_tk(event):
+            sel = tree_tk.selection()
+            if not sel:
+                return
+            r = tree_tk.item(sel[0])["values"]
+            e_tk.delete(0, tk.END)
+            e_tk.insert(0, r[0])
+            cbb_quyen.set(r[1])
+            e_mk.delete(0, tk.END)
+
+        def luu_tk():
+            tk_nhap = e_tk.get().strip()
+            mk_nhap = e_mk.get().strip()
+            quyen_nhap = cbb_quyen.get().strip()
+            if not tk_nhap:
+                messagebox.showwarning("Chú ý", "Vui lòng nhập Tên tài khoản!", parent=win)
+                return
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT TenDangNhap FROM TaiKhoan WHERE TenDangNhap=%s", (tk_nhap,))
+                ton_tai = cur.fetchone()
+                if ton_tai:
+                    if mk_nhap:
+                        cur.execute(
+                            "UPDATE TaiKhoan SET MatKhau=%s, Quyen=%s WHERE TenDangNhap=%s",
+                            (ma_hoa_mk(mk_nhap), quyen_nhap, tk_nhap)
+                        )
+                    else:
+                        cur.execute(
+                            "UPDATE TaiKhoan SET Quyen=%s WHERE TenDangNhap=%s",
+                            (quyen_nhap, tk_nhap)
+                        )
+                else:
+                    if not mk_nhap:
+                        messagebox.showwarning("Chú ý", "Vui lòng nhập mật khẩu cho tài khoản mới!", parent=win)
+                        return
+                    cur.execute(
+                        "INSERT INTO TaiKhoan (TenDangNhap, MatKhau, Quyen) VALUES (%s, %s, %s)",
+                        (tk_nhap, ma_hoa_mk(mk_nhap), quyen_nhap)
+                    )
+                conn.commit()
+                load_tk()
+                e_mk.delete(0, tk.END)
+                messagebox.showinfo("Thành công", f"Đã lưu tài khoản '{tk_nhap}'!", parent=win)
+            finally:
+                cur.close()
+                conn.close()
+
+        def xoa_tk():
+            sel = tree_tk.selection()
+            if not sel:
+                return
+            r = tree_tk.item(sel[0])["values"]
+            if r[0] == username:
+                messagebox.showwarning("Không thể xóa", "Không thể xóa tài khoản đang đăng nhập!", parent=win)
+                return
+            if not messagebox.askyesno("Xác nhận", f"Xóa tài khoản '{r[0]}'?", parent=win):
+                return
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM TaiKhoan WHERE TenDangNhap=%s", (r[0],))
+                conn.commit()
+                cur.close()
+                conn.close()
+                load_tk()
+
+        tree_tk.bind("<<TreeviewSelect>>", chon_tk)
+
+        f_btn = tk.Frame(win)
+        f_btn.pack(pady=8)
+        tk.Button(f_btn, text="Lưu", width=10, command=luu_tk).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Xóa", width=10, command=xoa_tk).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=4)
+
+        load_tk()
+
+    def open_danhmuc_to():
+        win = tk.Toplevel(root)
+        win.title("Tổ chuyên môn")
+        center_window(win, 540, 390)
+        win.grab_set()
+        win.focus_set()
+
+        f_form = tk.LabelFrame(win, text=" Thông tin Tổ chuyên môn ", padx=10, pady=6)
+        f_form.pack(fill="x", padx=12, pady=8)
+
+        tk.Label(f_form, text="Mã Tổ:").grid(row=0, column=0, padx=5, pady=4, sticky="w")
+        e_mato = tk.Entry(f_form, width=12)
+        e_mato.grid(row=0, column=1, padx=5, pady=4, sticky="w")
+
+        tk.Label(f_form, text="Tên Tổ:").grid(row=0, column=2, padx=10, pady=4, sticky="w")
+        e_tento = tk.Entry(f_form, width=26)
+        e_tento.grid(row=0, column=3, padx=5, pady=4, sticky="w")
+
+        f_tree = tk.Frame(win)
+        f_tree.pack(fill="both", expand=True, padx=12, pady=4)
+        tree_pb = ttk.Treeview(f_tree, columns=("mato", "tento"), show="headings", height=8)
+        tree_pb.heading("mato", text="Mã Tổ")
+        tree_pb.heading("tento", text="Tên Tổ Chuyên Môn")
+        tree_pb.column("mato", width=120, anchor="center")
+        tree_pb.column("tento", width=360)
+        tree_pb.pack(fill="both", expand=True)
+
+        def load_pb():
+            for i in tree_pb.get_children():
+                tree_pb.delete(i)
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT MaTo, TenTo FROM DM_ToChuyenMon ORDER BY MaTo")
+                for r in cur.fetchall():
+                    tree_pb.insert("", tk.END, values=r)
+                cur.close()
+                conn.close()
+
+        def chon_pb(event):
+            sel = tree_pb.selection()
+            if not sel:
+                return
+            r = tree_pb.item(sel[0])["values"]
+            e_mato.delete(0, tk.END)
+            e_mato.insert(0, r[0])
+            e_tento.delete(0, tk.END)
+            e_tento.insert(0, r[1])
+
+        def luu_pb():
+            mato = e_mato.get().strip().upper()
+            tento = e_tento.get().strip()
+            if not mato or not tento:
+                messagebox.showwarning("Cảnh báo", "Vui lòng nhập Mã Tổ và Tên Tổ!", parent=win)
+                return
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo)",
+                    (mato, tento)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                load_pb()
+                cap_nhat_cbb_to_chinh()
+
+        def xoa_pb():
+            sel = tree_pb.selection()
+            if not sel:
+                return
+            r = tree_pb.item(sel[0])["values"]
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM HS_GiaoVien WHERE MaTo=%s", (r[0],))
+                so_gv = cur.fetchone()[0]
+                if so_gv > 0:
+                    messagebox.showwarning(
+                        "Không thể xóa",
+                        f"Tổ '{r[1]}' đang có {so_gv} giáo viên trực thuộc!\n"
+                        "Vui lòng chuyển giáo viên sang tổ khác trước khi xóa để không làm mất dữ liệu.",
+                        parent=win
+                    )
+                    return
+                if not messagebox.askyesno("Xác nhận", f"Xóa tổ '{r[1]}'?", parent=win):
+                    return
+                cur.execute("DELETE FROM DM_ToChuyenMon WHERE MaTo=%s", (r[0],))
+                conn.commit()
+                load_pb()
+                cap_nhat_cbb_to_chinh()
+            finally:
+                cur.close()
+                conn.close()
+
+        tree_pb.bind("<<TreeviewSelect>>", chon_pb)
+
+        f_btn = tk.Frame(win)
+        f_btn.pack(pady=8)
+        tk.Button(f_btn, text="Lưu", width=10, command=luu_pb).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Xóa", width=10, command=xoa_pb).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=4)
+
+        load_pb()
+
+    def open_danhmuc_chucvu():
+        win = tk.Toplevel(root)
+        win.title("Chức vụ & Mức giảm tiết")
+        center_window(win, 600, 400)
+        win.grab_set()
+        win.focus_set()
+
+        f_form = tk.LabelFrame(win, text=" Thông tin Chức vụ ", padx=10, pady=6)
+        f_form.pack(fill="x", padx=12, pady=8)
+
+        tk.Label(f_form, text="Mã CV:").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        e_macv = tk.Entry(f_form, width=10)
+        e_macv.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+
+        tk.Label(f_form, text="Tên CV:").grid(row=0, column=2, padx=6, pady=4, sticky="w")
+        e_tencv = tk.Entry(f_form, width=22)
+        e_tencv.grid(row=0, column=3, padx=4, pady=4, sticky="w")
+
+        tk.Label(f_form, text="Tiết giảm:").grid(row=0, column=4, padx=6, pady=4, sticky="w")
+        e_giam = tk.Entry(f_form, width=6)
+        e_giam.insert(0, "0")
+        e_giam.grid(row=0, column=5, padx=4, pady=4, sticky="w")
+
+        f_tree = tk.Frame(win)
+        f_tree.pack(fill="both", expand=True, padx=12, pady=4)
+        tree_cv = ttk.Treeview(f_tree, columns=("macv", "tencv", "giam"), show="headings", height=8)
+        tree_cv.heading("macv", text="Mã CV")
+        tree_cv.heading("tencv", text="Tên Chức Vụ / Chế Độ")
+        tree_cv.heading("giam", text="Tiết Giảm/Tuần")
+        tree_cv.column("macv", width=100, anchor="center")
+        tree_cv.column("tencv", width=310)
+        tree_cv.column("giam", width=130, anchor="center")
+        tree_cv.pack(fill="both", expand=True)
+
+        def load_cv():
+            for i in tree_cv.get_children():
+                tree_cv.delete(i)
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("SELECT MaCV, TenCV, SoTietGiam FROM DM_ChucVu ORDER BY MaCV")
+                for r in cur.fetchall():
+                    tree_cv.insert("", tk.END, values=r)
+                cur.close()
+                conn.close()
+
+        def chon_cv(event):
+            sel = tree_cv.selection()
+            if not sel:
+                return
+            r = tree_cv.item(sel[0])["values"]
+            e_macv.delete(0, tk.END)
+            e_macv.insert(0, r[0])
+            e_tencv.delete(0, tk.END)
+            e_tencv.insert(0, r[1])
+            e_giam.delete(0, tk.END)
+            e_giam.insert(0, r[2])
+
+        def luu_cv():
+            macv = e_macv.get().strip().upper()
+            tencv = e_tencv.get().strip()
+            try:
+                giam = int(e_giam.get().strip())
+            except ValueError:
+                messagebox.showwarning("Lỗi", "Tiết giảm phải là số nguyên!", parent=win)
+                return
+            if not macv or not tencv:
+                messagebox.showwarning("Cảnh báo", "Vui lòng nhập đủ thông tin!", parent=win)
+                return
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO DM_ChucVu (MaCV, TenCV, SoTietGiam) VALUES (%s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE TenCV=VALUES(TenCV), SoTietGiam=VALUES(SoTietGiam)",
+                    (macv, tencv, giam)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                load_cv()
+                load_data_chinh()
+
+        def xoa_cv():
+            sel = tree_cv.selection()
+            if not sel:
+                return
+            r = tree_cv.item(sel[0])["values"]
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM QTr_KiemNhiem WHERE MaCV=%s", (r[0],))
+                so_gv = cur.fetchone()[0]
+                if so_gv > 0:
+                    messagebox.showwarning(
+                        "Không thể xóa",
+                        f"Chức vụ '{r[1]}' đang có {so_gv} giáo viên đảm nhiệm!\n"
+                        "Vui lòng gỡ phân công kiêm nhiệm trước khi xóa để không làm mất dữ liệu.",
+                        parent=win
+                    )
+                    return
+                if not messagebox.askyesno("Xác nhận", f"Xóa chức vụ '{r[1]}'?", parent=win):
+                    return
+                cur.execute("DELETE FROM DM_ChucVu WHERE MaCV=%s", (r[0],))
+                conn.commit()
+                load_cv()
+                load_data_chinh()
+            finally:
+                cur.close()
+                conn.close()
+
+        tree_cv.bind("<<TreeviewSelect>>", chon_cv)
+
+        f_btn = tk.Frame(win)
+        f_btn.pack(pady=8)
+        tk.Button(f_btn, text="Lưu", width=10, command=luu_cv).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Xóa", width=10, command=xoa_cv).pack(side="left", padx=4)
+        tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=4)
+
+        load_cv()
+
+    def open_kiemnhiem(magv_chon=None):
+        win = tk.Toplevel(root)
+        win.title("Phân công kiêm nhiệm")
+        center_window(win, 660, 420)
+        win.grab_set()
+        win.focus_set()
+
+        f_top = tk.LabelFrame(win, text=" Gán chức vụ kiêm nhiệm (Tối đa 02 chức vụ/GV) ", padx=10, pady=6)
+        f_top.pack(fill="x", padx=12, pady=8)
+
+        conn = get_db_connection()
+        ds_gv = []
+        ds_cv = []
+        gv_gender = {}
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT MaGV, HoTen, GioiTinh FROM HS_GiaoVien ORDER BY MaGV")
+            for mgv, ht, gt in cur.fetchall():
+                ds_gv.append(f"{mgv} - {ht}")
+                gv_gender[mgv] = gt
+            cur.execute("SELECT MaCV, TenCV, SoTietGiam FROM DM_ChucVu WHERE SoTietGiam > 0 ORDER BY MaCV")
+            for mcv, tcv, giam in cur.fetchall():
+                ds_cv.append(f"{mcv} - {tcv} ({giam} tiết)")
+            cur.close()
+            conn.close()
+
+        tk.Label(f_top, text="Giáo viên:").grid(row=0, column=0, padx=5, pady=4, sticky="w")
+        cbb_gv = ttk.Combobox(f_top, values=ds_gv, width=28, state="readonly")
+        if ds_gv:
+            cbb_gv.current(0)
+            if magv_chon:
+                for item in ds_gv:
+                    if item.startswith(f"{magv_chon} -"):
+                        cbb_gv.set(item)
+                        break
+        cbb_gv.grid(row=0, column=1, padx=5, pady=4, sticky="w")
+
+        tk.Label(f_top, text="Chức vụ:").grid(row=1, column=0, padx=5, pady=4, sticky="w")
+        cbb_cv = ttk.Combobox(f_top, values=ds_cv, width=28, state="readonly")
+        if ds_cv:
+            cbb_cv.current(0)
+        cbb_cv.grid(row=1, column=1, padx=5, pady=4, sticky="w")
+
+        f_tree = tk.Frame(win)
+        f_tree.pack(fill="both", expand=True, padx=12, pady=4)
+        tree_kn = ttk.Treeview(f_tree, columns=("magv", "hoten", "macv", "tencv", "giam"), show="headings", height=8)
+        tree_kn.heading("magv", text="Mã GV")
+        tree_kn.heading("hoten", text="Họ và Tên")
+        tree_kn.heading("macv", text="Mã CV")
+        tree_kn.heading("tencv", text="Chức Vụ Kiêm Nhiệm")
+        tree_kn.heading("giam", text="Tiết Giảm")
+        tree_kn.column("magv", width=80, anchor="center")
+        tree_kn.column("hoten", width=180)
+        tree_kn.column("macv", width=70, anchor="center")
+        tree_kn.column("tencv", width=200)
+        tree_kn.column("giam", width=80, anchor="center")
+        tree_kn.pack(fill="both", expand=True)
+
+        def load_kn():
+            for i in tree_kn.get_children():
+                tree_kn.delete(i)
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT kn.MaGV, gv.HoTen, kn.MaCV, cv.TenCV, cv.SoTietGiam
+                    FROM QTr_KiemNhiem kn
+                    JOIN HS_GiaoVien gv ON kn.MaGV = gv.MaGV
+                    JOIN DM_ChucVu cv ON kn.MaCV = cv.MaCV
+                    ORDER BY kn.MaGV
+                """)
+                for r in cur.fetchall():
+                    tree_kn.insert("", tk.END, values=r)
+                cur.close()
+                conn.close()
+
+        def them_kn():
+            if not cbb_gv.get() or not cbb_cv.get():
+                return
+            magv = cbb_gv.get().split(" - ")[0].strip()
+            macv = cbb_cv.get().split(" - ")[0].strip()
+
+            if macv == "CON" and gv_gender.get(magv) == "Nam":
+                messagebox.showwarning("Không hợp lệ", "Chế độ con nhỏ < 12 tháng chỉ áp dụng cho giáo viên Nữ!", parent=win)
+                return
+
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM QTr_KiemNhiem WHERE MaGV=%s", (magv,))
+                if cur.fetchone()[0] >= 2:
+                    messagebox.showwarning("Giới hạn", f"Giáo viên {magv} đã đủ tối đa 02 chức vụ kiêm nhiệm!", parent=win)
+                    return
+                cur.execute("INSERT INTO QTr_KiemNhiem (MaGV, MaCV) VALUES (%s, %s)", (magv, macv))
+                conn.commit()
+                load_kn()
+                load_data_chinh()
+            except mysql.connector.IntegrityError:
+                conn.rollback()
+                messagebox.showwarning("Trùng", "Giáo viên đã được gán chức vụ này!", parent=win)
+            finally:
+                cur.close()
+                conn.close()
+
+        def xoa_kn():
+            sel = tree_kn.selection()
+            if not sel:
+                messagebox.showwarning("Chú ý", "Chọn một dòng trong bảng bên dưới để xóa!", parent=win)
+                return
+            r = tree_kn.item(sel[0])["values"]
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM QTr_KiemNhiem WHERE MaGV=%s AND MaCV=%s", (r[0], r[2]))
+                conn.commit()
+                cur.close()
+                conn.close()
+                load_kn()
+                load_data_chinh()
+
+        f_btn = tk.Frame(f_top)
+        f_btn.grid(row=0, column=2, rowspan=2, padx=12)
+        tk.Button(f_btn, text="Thêm kiêm nhiệm", width=15, command=them_kn).pack(pady=2)
+        tk.Button(f_btn, text="Xóa dòng chọn", width=15, command=xoa_kn).pack(pady=2)
+
+        tk.Button(win, text="Đóng", width=10, command=win.destroy).pack(pady=6)
+        load_kn()
+
+    # GIAO DIỆN MÀN HÌNH CHÍNH
+    tk.Label(root, text="QUẢN LÝ HỒ SƠ GIÁO VIÊN", font=("Arial", 15, "bold"), fg="#0d47a1").pack(pady=(10, 4))
+
+    # Khu vực 1: Nhập thông tin hồ sơ giáo viên
+    frame_info = tk.LabelFrame(root, text=" Thông tin giáo viên ", font=("Arial", 9, "bold"), padx=12, pady=8)
+    frame_info.pack(fill="x", padx=12, pady=4)
+
+    tk.Label(frame_info, text="Mã GV:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
     entry_magv = tk.Entry(frame_info, width=16)
-    entry_magv.grid(row=0, column=1, padx=5, pady=4, sticky="w")
+    entry_magv.grid(row=0, column=1, padx=5, pady=5, sticky="w")
 
-    tk.Label(frame_info, text="Họ và tên (*):").grid(row=0, column=2, padx=10, pady=4, sticky="w")
-    entry_hoten = tk.Entry(frame_info, width=26)
-    entry_hoten.grid(row=0, column=3, padx=5, pady=4, sticky="w")
+    tk.Label(frame_info, text="Họ và tên:").grid(row=0, column=2, padx=12, pady=5, sticky="w")
+    entry_hoten = tk.Entry(frame_info, width=28)
+    entry_hoten.grid(row=0, column=3, padx=5, pady=5, sticky="w")
 
-    tk.Label(frame_info, text="Giới tính:").grid(row=0, column=4, padx=10, pady=4, sticky="w")
+    tk.Label(frame_info, text="Giới tính:").grid(row=0, column=4, padx=12, pady=5, sticky="w")
     gender_var = tk.StringVar(value="Nam")
     f_gender = tk.Frame(frame_info)
-    f_gender.grid(row=0, column=5, padx=5, pady=4, sticky="w")
+    f_gender.grid(row=0, column=5, padx=5, pady=5, sticky="w")
     tk.Radiobutton(f_gender, text="Nam", variable=gender_var, value="Nam").pack(side="left")
-    tk.Radiobutton(f_gender, text="Nữ", variable=gender_var, value="Nữ").pack(side="left", padx=8)
+    tk.Radiobutton(f_gender, text="Nữ", variable=gender_var, value="Nữ").pack(side="left", padx=10)
 
-    tk.Label(frame_info, text="Ngày sinh:").grid(row=1, column=0, padx=5, pady=4, sticky="w")
+    tk.Label(frame_info, text="Ngày sinh:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
     if HAS_TKCALENDAR:
         date_entry = DateEntry(frame_info, width=14, background="darkblue",
                                foreground="white", date_pattern="dd/MM/yyyy")
-        date_entry.grid(row=1, column=1, padx=5, pady=4, sticky="w")
+        date_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
     else:
         date_entry = tk.Entry(frame_info, width=16)
         date_entry.insert(0, "01/01/1990")
-        date_entry.grid(row=1, column=1, padx=5, pady=4, sticky="w")
+        date_entry.grid(row=1, column=1, padx=5, pady=5, sticky="w")
 
-    tk.Label(frame_info, text="Tổ chuyên môn:").grid(row=1, column=2, padx=10, pady=4, sticky="w")
-    cbb_to = ttk.Combobox(frame_info, values=ds_ten_to, width=24, state="readonly")
+    tk.Label(frame_info, text="Tổ bộ môn:").grid(row=1, column=2, padx=12, pady=5, sticky="w")
+    f_to = tk.Frame(frame_info)
+    f_to.grid(row=1, column=3, padx=5, pady=5, sticky="w")
+    cbb_to = ttk.Combobox(f_to, values=ds_ten_to, width=22)
     if ds_ten_to:
         cbb_to.current(0)
-    cbb_to.grid(row=1, column=3, padx=5, pady=4, sticky="w")
+    cbb_to.pack(side="left")
 
-    tk.Label(frame_info, text="Trình độ:").grid(row=1, column=4, padx=10, pady=4, sticky="w")
-    cbb_trinhdo = ttk.Combobox(
-        frame_info,
-        values=["Cử nhân Sư phạm", "Thạc sĩ", "Tiến sĩ", "Cao đẳng Sư phạm"],
-        width=18, state="readonly"
-    )
+    tk.Label(frame_info, text="Trình độ:").grid(row=1, column=4, padx=12, pady=5, sticky="w")
+    ds_trinhdo = ["Cử nhân Sư phạm", "Thạc sĩ", "Tiến sĩ", "Cao đẳng Sư phạm"]
+    f_td = tk.Frame(frame_info)
+    f_td.grid(row=1, column=5, padx=5, pady=5, sticky="w")
+    cbb_trinhdo = ttk.Combobox(f_td, values=ds_trinhdo, width=15)
     cbb_trinhdo.current(0)
-    cbb_trinhdo.grid(row=1, column=5, padx=5, pady=4, sticky="w")
+    cbb_trinhdo.pack(side="left")
 
-    # Khung Tìm kiếm & Lọc theo Tổ (Khớp Hình 3.1 trong báo cáo)
-    frame_search = tk.Frame(win, pady=4)
-    frame_search.pack(fill="x", padx=10)
+    # Khu vực 2: Tìm kiếm, Lọc theo Tổ & Chọn Cấp trường
+    frame_filter = tk.Frame(root, pady=4)
+    frame_filter.pack(fill="x", padx=12)
 
-    tk.Label(frame_search, text="Tìm kiếm (Tên/Mã GV):").pack(side="left", padx=(0, 5))
-    entry_timkiem = tk.Entry(frame_search, width=24)
+    tk.Label(frame_filter, text="Tìm kiếm:").pack(side="left", padx=(0, 4))
+    entry_timkiem = tk.Entry(frame_filter, width=22)
     entry_timkiem.pack(side="left", padx=4)
 
-    tk.Label(frame_search, text="Lọc theo Tổ:").pack(side="left", padx=(15, 5))
-    cbb_loc_to = ttk.Combobox(frame_search, values=["-- Tất cả Tổ --"] + ds_ten_to, width=20, state="readonly")
+    tk.Label(frame_filter, text="Lọc theo Tổ:").pack(side="left", padx=(12, 4))
+    cbb_loc_to = ttk.Combobox(frame_filter, values=["Tất cả"] + ds_ten_to, width=18, state="readonly")
     cbb_loc_to.current(0)
     cbb_loc_to.pack(side="left", padx=4)
 
-    # Bảng Treeview
-    frame_tree = tk.Frame(win)
-    frame_tree.pack(fill="both", expand=True, padx=10, pady=4)
+    tk.Label(frame_filter, text="Cấp trường:").pack(side="left", padx=(16, 4))
+    cbb_loaitruong = ttk.Combobox(frame_filter, values=list(LOAI_TRUONG_MAP.keys()), width=16, state="readonly")
+    cbb_loaitruong.current(0)
+    cbb_loaitruong.pack(side="left", padx=4)
+
+    # Khu vực 3: Bảng hiển thị Treeview
+    frame_tree = tk.Frame(root)
+    frame_tree.pack(fill="both", expand=True, padx=12, pady=4)
 
     cols = ("magv", "hoten", "phai", "ngaysinh", "to", "trinhdo", "chucvu", "giam", "day")
-    tree = ttk.Treeview(frame_tree, columns=cols, show="headings", height=10)
+    tree = ttk.Treeview(frame_tree, columns=cols, show="headings", height=12)
     tree.heading("magv",     text="Mã GV")
     tree.heading("hoten",    text="Họ và Tên")
     tree.heading("phai",     text="Phái")
     tree.heading("ngaysinh", text="Ngày Sinh")
     tree.heading("to",       text="Tổ Chuyên Môn")
     tree.heading("trinhdo",  text="Trình Độ")
-    tree.heading("chucvu",   text="Chức Vụ Kiêm Nhiệm")
+    tree.heading("chucvu",   text="Kiêm Nhiệm")
     tree.heading("giam",     text="Giảm Trừ")
     tree.heading("day",      text="Định Mức Tiết")
 
     tree.column("magv",     width=65,  anchor="center")
-    tree.column("hoten",    width=155)
+    tree.column("hoten",    width=160)
     tree.column("phai",     width=50,  anchor="center")
     tree.column("ngaysinh", width=85,  anchor="center")
-    tree.column("to",       width=115)
+    tree.column("to",       width=120)
     tree.column("trinhdo",  width=115)
-    tree.column("chucvu",   width=170)
-    tree.column("giam",     width=70,  anchor="center")
+    tree.column("chucvu",   width=175)
+    tree.column("giam",     width=75,  anchor="center")
     tree.column("day",      width=90,  anchor="center")
 
     sb = ttk.Scrollbar(frame_tree, orient="vertical", command=tree.yview)
@@ -655,7 +975,133 @@ def open_quanly_giaovien():
     sb.pack(side="right", fill="y")
     tree.pack(fill="both", expand=True)
 
-    def load_data():
+    def cap_nhat_cbb_to_chinh():
+        global to_map, rev_to_map, ds_ten_to
+        to_map = lay_ds_to()
+        rev_to_map = {v: k for k, v in to_map.items()}
+        ds_ten_to = list(to_map.values())
+        cbb_to["values"] = ds_ten_to
+        cbb_loc_to["values"] = ["Tất cả"] + ds_ten_to
+        load_data_chinh()
+
+    def them_nhanh_to():
+        """Thêm nhanh giá trị mới cho Combobox Tổ bộ môn và lưu vào CSDL."""
+        win_to = tk.Toplevel(root)
+        win_to.title("Thêm tổ bộ môn")
+        center_window(win_to, 340, 165)
+        win_to.grab_set()
+        win_to.focus_set()
+
+        f = tk.Frame(win_to, padx=14, pady=12)
+        f.pack(fill="both", expand=True)
+
+        tk.Label(f, text="Mã Tổ (VD: TD):").grid(row=0, column=0, pady=5, sticky="w")
+        e_ma = tk.Entry(f, width=18)
+        e_ma.grid(row=0, column=1, pady=5, padx=6)
+
+        tk.Label(f, text="Tên Tổ bộ môn:").grid(row=1, column=0, pady=5, sticky="w")
+        e_ten = tk.Entry(f, width=18)
+        dang_nhap = cbb_to.get().strip()
+        if dang_nhap and dang_nhap not in ds_ten_to:
+            e_ten.insert(0, dang_nhap)
+        e_ten.grid(row=1, column=1, pady=5, padx=6)
+
+        def luu_to_moi():
+            mato = e_ma.get().strip().upper()
+            tento = e_ten.get().strip()
+            if not mato or not tento:
+                messagebox.showwarning("Chú ý", "Vui lòng nhập đầy đủ Mã Tổ và Tên Tổ!", parent=win_to)
+                return
+            conn = get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo)",
+                    (mato, tento)
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                cap_nhat_cbb_to_chinh()
+                cbb_to.set(tento)
+                win_to.destroy()
+
+        f_b = tk.Frame(f)
+        f_b.grid(row=2, column=0, columnspan=2, pady=10)
+        tk.Button(f_b, text="Thêm", width=9, command=luu_to_moi).pack(side="left", padx=4)
+        tk.Button(f_b, text="Hủy", width=9, command=win_to.destroy).pack(side="left", padx=4)
+
+    def them_nhanh_trinhdo():
+        """Thêm nhanh giá trị mới cho Combobox Trình độ."""
+        win_td = tk.Toplevel(root)
+        win_td.title("Thêm trình độ")
+        center_window(win_td, 330, 130)
+        win_td.grab_set()
+        win_td.focus_set()
+
+        f = tk.Frame(win_td, padx=14, pady=12)
+        f.pack(fill="both", expand=True)
+
+        tk.Label(f, text="Tên Trình độ:").grid(row=0, column=0, pady=6, sticky="w")
+        e_td = tk.Entry(f, width=18)
+        dang_nhap = cbb_trinhdo.get().strip()
+        if dang_nhap and dang_nhap not in ds_trinhdo:
+            e_td.insert(0, dang_nhap)
+        e_td.grid(row=0, column=1, pady=6, padx=6)
+
+        def luu_td_moi():
+            td_moi = e_td.get().strip()
+            if not td_moi:
+                messagebox.showwarning("Chú ý", "Vui lòng nhập tên Trình độ!", parent=win_td)
+                return
+            if td_moi not in ds_trinhdo:
+                ds_trinhdo.append(td_moi)
+                cbb_trinhdo["values"] = ds_trinhdo
+            cbb_trinhdo.set(td_moi)
+            win_td.destroy()
+
+        f_b = tk.Frame(f)
+        f_b.grid(row=1, column=0, columnspan=2, pady=8)
+        tk.Button(f_b, text="Thêm", width=9, command=luu_td_moi).pack(side="left", padx=4)
+        tk.Button(f_b, text="Hủy", width=9, command=win_td.destroy).pack(side="left", padx=4)
+
+    btn_them_to = tk.Button(f_to, text="+", width=2, command=them_nhanh_to)
+    btn_them_to.pack(side="left", padx=(3, 0))
+
+    btn_them_td = tk.Button(f_td, text="+", width=2, command=them_nhanh_trinhdo)
+    btn_them_td.pack(side="left", padx=(3, 0))
+
+    def lay_hoac_them_mato(ten_to_nhap):
+        """Lấy Mã Tổ từ Combobox; nếu người dùng gõ Tổ mới chưa có thì tự động thêm vào CSDL."""
+        ten_to_nhap = ten_to_nhap.strip()
+        if not ten_to_nhap:
+            return "TOAN"
+        if ten_to_nhap in rev_to_map:
+            return rev_to_map[ten_to_nhap]
+        chu_cai = "".join([tu[0].upper() for tu in ten_to_nhap.split() if tu])
+        mato_moi = (chu_cai if chu_cai else "TO")[:6]
+        idx = 1
+        goc = mato_moi
+        while mato_moi in to_map:
+            mato_moi = f"{goc}{idx}"
+            idx += 1
+        conn = get_db_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo)",
+                (mato_moi, ten_to_nhap)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            cap_nhat_cbb_to_chinh()
+            cbb_to.set(ten_to_nhap)
+        return mato_moi
+
+    def load_data_chinh():
         for i in tree.get_children():
             tree.delete(i)
         conn = get_db_connection()
@@ -669,26 +1115,32 @@ def open_quanly_giaovien():
         rows = cur.fetchall()
         cur.close()
 
-        for row in rows:
-            magv, hoten, phai, ngaysinh, mato, trinhdo = row
+        for magv, hoten, phai, ngaysinh, mato, trinhdo in rows:
             tento = to_map.get(mato, mato)
             td = trinhdo if trinhdo else "Cử nhân Sư phạm"
-
+            if td not in ds_trinhdo:
+                ds_trinhdo.append(td)
+                cbb_trinhdo["values"] = ds_trinhdo
             if tu_khoa and (tu_khoa not in magv.lower() and tu_khoa not in hoten.lower()):
                 continue
-            if ten_to_loc != "-- Tất cả Tổ --" and tento != ten_to_loc:
+            if ten_to_loc != "Tất cả" and tento != ten_to_loc:
                 continue
 
             cv_str, giam, day = lay_thong_tin_kiem_nhiem(conn, magv)
-            ns_str = format_date_vn(ngaysinh)
             tree.insert("", tk.END, values=(
-                magv, hoten, phai, ns_str, tento, td, cv_str, f"-{giam} tiết", f"{day} tiết"
+                magv, hoten, phai, format_date_vn(ngaysinh),
+                tento, td, cv_str, f"{giam} tiết", f"{day} tiết"
             ))
         conn.close()
 
-    tk.Button(frame_search, text="Tìm kiếm / Lọc", width=14, bg="#1976d2", fg="white",
-              command=load_data).pack(side="left", padx=6)
-    cbb_loc_to.bind("<<ComboboxSelected>>", lambda e: load_data())
+    def doi_cap_truong(event=None):
+        global CURRENT_DINH_MUC
+        CURRENT_DINH_MUC = LOAI_TRUONG_MAP.get(cbb_loaitruong.get(), 17)
+        load_data_chinh()
+
+    tk.Button(frame_filter, text="Tìm", width=8, command=load_data_chinh).pack(side="left", padx=4)
+    cbb_loc_to.bind("<<ComboboxSelected>>", lambda e: load_data_chinh())
+    cbb_loaitruong.bind("<<ComboboxSelected>>", doi_cap_truong)
 
     def clear_form():
         entry_magv.config(state="normal")
@@ -706,6 +1158,7 @@ def open_quanly_giaovien():
         if ds_ten_to:
             cbb_to.current(0)
         cbb_trinhdo.current(0)
+        tree.selection_remove(tree.selection())
 
     def _get_ngaysinh_mysql():
         raw = date_entry.get().strip()
@@ -719,19 +1172,28 @@ def open_quanly_giaovien():
         return raw
 
     def them_gv():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        magv     = entry_magv.get().strip()
+        magv     = entry_magv.get().strip().upper()
         hoten    = entry_hoten.get().strip()
         phai     = gender_var.get()
         ngaysinh = _get_ngaysinh_mysql()
-        tento    = cbb_to.get()
-        mato     = rev_to_map.get(tento, "TOAN")
-        trinhdo  = cbb_trinhdo.get()
+        trinhdo  = cbb_trinhdo.get().strip()
 
         if not magv or not hoten:
-            messagebox.showwarning("Cảnh báo", "Vui lòng nhập đầy đủ Mã GV và Họ tên!", parent=win)
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập Mã GV và Họ tên!")
             return
+
+        tien_to, phan_so = tach_tien_to_va_so(magv)
+        if tien_to != MA_TIEN_TO or not phan_so.isdigit():
+            messagebox.showwarning(
+                "Mã không đồng nhất",
+                f"Toàn bộ mã phải mở đầu bằng tiền tố cố định '{MA_TIEN_TO}' kèm chữ số (VD: {MA_TIEN_TO}001)!"
+            )
+            return
+
+        mato = lay_hoac_them_mato(cbb_to.get())
+        if trinhdo and trinhdo not in ds_trinhdo:
+            ds_trinhdo.append(trinhdo)
+            cbb_trinhdo["values"] = ds_trinhdo
 
         conn = get_db_connection()
         if conn is None:
@@ -744,12 +1206,177 @@ def open_quanly_giaovien():
                 (magv, hoten, phai, ngaysinh, mato, trinhdo)
             )
             conn.commit()
-            messagebox.showinfo("Thành công", f"Đã thêm hồ sơ giáo viên: {hoten}", parent=win)
-            load_data()
+            load_data_chinh()
             clear_form()
+            messagebox.showinfo("Thành công", f"Đã thêm giáo viên {hoten} ({magv})")
         except mysql.connector.IntegrityError:
             conn.rollback()
-            messagebox.showwarning("Trùng mã", f"Mã giáo viên '{magv}' đã tồn tại trong CSDL!", parent=win)
+            messagebox.showwarning("Trùng mã", f"Mã '{magv}' đã tồn tại!")
+        finally:
+            cur.close()
+            conn.close()
+
+    def sua_gv():
+        global MA_TIEN_TO
+        sel = tree.selection()
+        new_magv = entry_magv.get().strip().upper()
+        if not new_magv:
+            messagebox.showwarning("Cảnh báo", "Chọn một giáo viên trên bảng để sửa!")
+            return
+
+        tien_to_moi, phan_so_moi = tach_tien_to_va_so(new_magv)
+        if not tien_to_moi or not tien_to_moi.isalpha() or not phan_so_moi.isdigit():
+            messagebox.showwarning(
+                "Sai quy tắc mã",
+                f"Mã phải mở đầu bằng chữ cái hợp lệ kèm chữ số (VD: {MA_TIEN_TO}001, NV001)!"
+            )
+            return
+
+        old_magv = str(tree.item(sel[0])["values"][0]).strip() if sel else new_magv
+        hoten    = entry_hoten.get().strip()
+        phai     = gender_var.get()
+        ngaysinh = _get_ngaysinh_mysql()
+        mato     = lay_hoac_them_mato(cbb_to.get())
+        trinhdo  = cbb_trinhdo.get().strip()
+        if trinhdo and trinhdo not in ds_trinhdo:
+            ds_trinhdo.append(trinhdo)
+            cbb_trinhdo["values"] = ds_trinhdo
+
+        doi_toan_bo_tien_to = False
+        if tien_to_moi != MA_TIEN_TO:
+            if not messagebox.askyesno(
+                "Đồng bộ tiền tố mã",
+                f"Bạn vừa đổi tiền tố mã từ '{MA_TIEN_TO}' sang '{tien_to_moi}'.\n"
+                f"Để toàn bộ mã mở đầu đều giống nhau, hệ thống sẽ đổi đồng loạt tất cả mã sang '{tien_to_moi}'.\n"
+                "Bạn có đồng ý không?"
+            ):
+                return
+            doi_toan_bo_tien_to = True
+
+        conn = get_db_connection()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        try:
+            _, so_cu = tach_tien_to_va_so(old_magv)
+            if phan_so_moi != so_cu:
+                ma_kiem_tra = MA_TIEN_TO + phan_so_moi
+                cur.execute("SELECT MaGV FROM HS_GiaoVien WHERE MaGV=%s", (ma_kiem_tra,))
+                if cur.fetchone():
+                    messagebox.showwarning("Trùng mã", f"Số thứ tự mã '{phan_so_moi}' đã tồn tại!")
+                    return
+
+            cur.execute("SET FOREIGN_KEY_CHECKS=0")
+            if doi_toan_bo_tien_to:
+                cur.execute("SELECT MaGV FROM HS_GiaoVien")
+                ds_tat_ca = [r[0] for r in cur.fetchall()]
+                for ma_hien_tai in ds_tat_ca:
+                    _, duoi_so = tach_tien_to_va_so(str(ma_hien_tai))
+                    if ma_hien_tai == old_magv:
+                        duoi_so = phan_so_moi
+                    ma_cap_nhat = tien_to_moi + duoi_so
+                    cur.execute("UPDATE HS_GiaoVien SET MaGV=%s WHERE MaGV=%s", (ma_cap_nhat, ma_hien_tai))
+                    cur.execute("UPDATE QTr_KiemNhiem SET MaGV=%s WHERE MaGV=%s", (ma_cap_nhat, ma_hien_tai))
+                MA_TIEN_TO = tien_to_moi
+                new_magv = tien_to_moi + phan_so_moi
+            elif new_magv != old_magv:
+                cur.execute("UPDATE HS_GiaoVien SET MaGV=%s WHERE MaGV=%s", (new_magv, old_magv))
+                cur.execute("UPDATE QTr_KiemNhiem SET MaGV=%s WHERE MaGV=%s", (new_magv, old_magv))
+
+            cur.execute(
+                "UPDATE HS_GiaoVien SET HoTen=%s, GioiTinh=%s, NgaySinh=%s, MaTo=%s, TrinhDo=%s WHERE MaGV=%s",
+                (hoten, phai, ngaysinh, mato, trinhdo, new_magv)
+            )
+            cur.execute("SET FOREIGN_KEY_CHECKS=1")
+            conn.commit()
+            load_data_chinh()
+            clear_form()
+            if doi_toan_bo_tien_to:
+                messagebox.showinfo("Thành công", f"Đã đổi đồng nhất toàn bộ mã sang tiền tố '{MA_TIEN_TO}' và lưu thông tin!")
+            else:
+                messagebox.showinfo("Thành công", f"Đã cập nhật thông tin ({new_magv})!")
+        finally:
+            cur.close()
+            conn.close()
+
+    def open_doi_tien_to():
+        """Cửa sổ cho phép Admin đổi tiền tố chữ cái mở đầu đồng nhất cho toàn bộ danh sách."""
+        win_db = tk.Toplevel(root)
+        win_db.title("Đổi tiền tố mã")
+        center_window(win_db, 350, 165)
+        win_db.grab_set()
+        win_db.focus_set()
+
+        f = tk.Frame(win_db, padx=16, pady=12)
+        f.pack(fill="both", expand=True)
+
+        tk.Label(f, text=f"Tiền tố cố định hiện tại: {MA_TIEN_TO}", font=("Arial", 9, "bold"), fg="#0d47a1").grid(
+            row=0, column=0, columnspan=2, pady=(0, 8), sticky="w"
+        )
+        tk.Label(f, text="Tiền tố mới (chữ cái):").grid(row=1, column=0, pady=6, sticky="w")
+        e_tt = tk.Entry(f, width=16)
+        e_tt.insert(0, "NV" if MA_TIEN_TO == "GV" else "GV")
+        e_tt.grid(row=1, column=1, pady=6, padx=6, sticky="w")
+
+        def thuc_hien_doi():
+            global MA_TIEN_TO
+            dich = e_tt.get().strip().upper()
+            if not dich or not dich.isalpha():
+                messagebox.showwarning(
+                    "Không hợp lệ",
+                    "Tiền tố mã bắt buộc phải là các chữ cái (VD: GV, NV, CB)!",
+                    parent=win_db
+                )
+                return
+            if dich == MA_TIEN_TO:
+                messagebox.showinfo("Thông báo", f"Toàn bộ mã hiện đã dùng tiền tố '{dich}'!", parent=win_db)
+                return
+            conn = get_db_connection()
+            if not conn:
+                return
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT MaGV FROM HS_GiaoVien")
+                ds_ma = [r[0] for r in cur.fetchall()]
+                cur.execute("SET FOREIGN_KEY_CHECKS=0")
+                for ma_cu in ds_ma:
+                    _, duoi_so = tach_tien_to_va_so(str(ma_cu))
+                    ma_moi = dich + duoi_so
+                    cur.execute("UPDATE HS_GiaoVien SET MaGV=%s WHERE MaGV=%s", (ma_moi, ma_cu))
+                    cur.execute("UPDATE QTr_KiemNhiem SET MaGV=%s WHERE MaGV=%s", (ma_moi, ma_cu))
+                cur.execute("SET FOREIGN_KEY_CHECKS=1")
+                conn.commit()
+                MA_TIEN_TO = dich
+                load_data_chinh()
+                clear_form()
+                win_db.destroy()
+                messagebox.showinfo("Thành công", f"Đã đổi toàn bộ mã mở đầu sang '{MA_TIEN_TO}'!")
+            finally:
+                cur.close()
+                conn.close()
+
+        f_b = tk.Frame(f)
+        f_b.grid(row=2, column=0, columnspan=2, pady=10)
+        tk.Button(f_b, text="Lưu", width=10, command=thuc_hien_doi).pack(side="left", padx=5)
+        tk.Button(f_b, text="Đóng", width=10, command=win_db.destroy).pack(side="left", padx=5)
+
+    def xoa_gv():
+        sel = tree.selection()
+        if not sel:
+            messagebox.showwarning("Cảnh báo", "Chọn giáo viên cần xóa!")
+            return
+        r = tree.item(sel[0])["values"]
+        if not messagebox.askyesno("Xác nhận", f"Xóa giáo viên {r[1]} ({r[0]})?"):
+            return
+        conn = get_db_connection()
+        if conn is None:
+            return
+        cur = conn.cursor()
+        try:
+            cur.execute("DELETE FROM HS_GiaoVien WHERE MaGV=%s", (r[0],))
+            conn.commit()
+            load_data_chinh()
+            clear_form()
         finally:
             cur.close()
             conn.close()
@@ -762,7 +1389,6 @@ def open_quanly_giaovien():
         entry_magv.config(state="normal")
         entry_magv.delete(0, tk.END)
         entry_magv.insert(0, r[0])
-        entry_magv.config(state="readonly")
 
         entry_hoten.delete(0, tk.END)
         entry_hoten.insert(0, r[1])
@@ -773,8 +1399,6 @@ def open_quanly_giaovien():
                 parts = str(r[3]).split("/")
                 if len(parts) == 3:
                     date_entry.set_date(date(int(parts[2]), int(parts[1]), int(parts[0])))
-                else:
-                    date_entry.set_date(str(r[3]))
             except Exception:
                 pass
         else:
@@ -784,580 +1408,166 @@ def open_quanly_giaovien():
         cbb_to.set(r[4])
         cbb_trinhdo.set(r[5])
 
-    def sua_gv():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        magv = entry_magv.get().strip()
-        if not magv:
-            messagebox.showwarning("Cảnh báo", "Hãy chọn một giáo viên trong bảng để cập nhật!", parent=win)
-            return
-        hoten    = entry_hoten.get().strip()
-        phai     = gender_var.get()
-        ngaysinh = _get_ngaysinh_mysql()
-        tento    = cbb_to.get()
-        mato     = rev_to_map.get(tento, "TOAN")
-        trinhdo  = cbb_trinhdo.get()
-
-        conn = get_db_connection()
-        if conn is None:
-            return
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                "UPDATE HS_GiaoVien SET HoTen=%s, GioiTinh=%s, NgaySinh=%s, MaTo=%s, TrinhDo=%s "
-                "WHERE MaGV=%s",
-                (hoten, phai, ngaysinh, mato, trinhdo, magv)
-            )
-            conn.commit()
-            messagebox.showinfo("Thành công", f"Đã cập nhật hồ sơ giáo viên {magv}", parent=win)
-            load_data()
-            clear_form()
-        finally:
-            cur.close()
-            conn.close()
-
-    def xoa_gv():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        sel = tree.selection()
-        if not sel:
-            messagebox.showwarning("Cảnh báo", "Hãy chọn giáo viên cần xóa!", parent=win)
-            return
-        r = tree.item(sel[0])["values"]
-        if not messagebox.askyesno("Xác nhận xóa", f"Bạn có chắc chắn muốn xóa hồ sơ giáo viên {r[1]} ({r[0]})?", parent=win):
-            return
-        conn = get_db_connection()
-        if conn is None:
-            return
-        cur = conn.cursor()
-        try:
-            cur.execute("DELETE FROM HS_GiaoVien WHERE MaGV = %s", (r[0],))
-            conn.commit()
-            messagebox.showinfo("Thành công", "Đã xóa hồ sơ giáo viên!", parent=win)
-            load_data()
-            clear_form()
-        finally:
-            cur.close()
-            conn.close()
-
     tree.bind("<<TreeviewSelect>>", chon_dong)
 
-    # Cụm nút điều khiển
-    f_btn = tk.Frame(win)
-    f_btn.pack(pady=8)
-    tk.Button(f_btn, text="Thêm",       width=9,  command=them_gv).grid(row=0, column=0, padx=4)
-    tk.Button(f_btn, text="Lưu",        width=9,  command=sua_gv).grid(row=0, column=1, padx=4)
-    tk.Button(f_btn, text="Sửa",        width=9,  command=sua_gv).grid(row=0, column=2, padx=4)
-    tk.Button(f_btn, text="Hủy",        width=9,  command=clear_form).grid(row=0, column=3, padx=4)
-    tk.Button(f_btn, text="Xóa",        width=9,  command=xoa_gv).grid(row=0, column=4, padx=4)
-    tk.Button(f_btn, text="Phân công kiêm nhiệm", width=18, bg="#0d47a1", fg="white",
-              font=("Arial", 9, "bold"),
-              command=lambda: [win.destroy(), open_nghiepvu_dinhmuc()]).grid(row=0, column=5, padx=4)
-    tk.Button(f_btn, text="Xuất Excel", width=11, bg="#27ae60", fg="white",
-              font=("Arial", 9, "bold"), command=lambda: xuat_excel(win)).grid(row=0, column=6, padx=4)
-    tk.Button(f_btn, text="Đóng",       width=9,  command=win.destroy).grid(row=0, column=7, padx=4)
+    # Khu vực 4: Các nút điều khiển
+    f_btn = tk.Frame(root)
+    f_btn.pack(pady=10)
 
-    load_data()
-
-
-# --- CỬA SỔ 2: DANH MỤC -> CHỨC VỤ & QUY ĐỊNH GIẢM TIẾT ---
-def open_danhmuc_chucvu():
-    win = tk.Toplevel(root)
-    win.title("Danh mục Chức vụ & Chế độ giảm trừ")
-    center_window(win, 680, 480)
-    win.grab_set()
-    win.focus_set()
-
-    tk.Label(win, text="DANH MỤC CHỨC VỤ & QUY ĐỊNH GIẢM TIẾT",
-             font=("Arial", 13, "bold"), fg="#0d47a1").pack(pady=8)
-
-    f_form = tk.LabelFrame(win, text=" Thông tin chức vụ / chế độ giảm trừ ", padx=10, pady=6)
-    f_form.pack(fill="x", padx=15, pady=4)
-
-    tk.Label(f_form, text="Mã CV (*):").grid(row=0, column=0, padx=5, pady=4, sticky="w")
-    e_macv = tk.Entry(f_form, width=12)
-    e_macv.grid(row=0, column=1, padx=5, pady=4, sticky="w")
-
-    tk.Label(f_form, text="Tên chức vụ (*):").grid(row=0, column=2, padx=8, pady=4, sticky="w")
-    e_tencv = tk.Entry(f_form, width=25)
-    e_tencv.grid(row=0, column=3, padx=5, pady=4, sticky="w")
-
-    tk.Label(f_form, text="Số tiết giảm:").grid(row=0, column=4, padx=8, pady=4, sticky="w")
-    e_giam = tk.Entry(f_form, width=8)
-    e_giam.insert(0, "0")
-    e_giam.grid(row=0, column=5, padx=5, pady=4, sticky="w")
-
-    f_tree = tk.Frame(win)
-    f_tree.pack(fill="both", expand=True, padx=15, pady=5)
-    tree_cv = ttk.Treeview(f_tree, columns=("macv", "tencv", "giam"), show="headings", height=8)
-    tree_cv.heading("macv",  text="Mã Chức Vụ")
-    tree_cv.heading("tencv", text="Tên Chức Vụ / Chế Độ")
-    tree_cv.heading("giam",  text="Số Tiết Giảm/Tuần")
-    tree_cv.column("macv",  width=110, anchor="center")
-    tree_cv.column("tencv", width=320)
-    tree_cv.column("giam",  width=140, anchor="center")
-    tree_cv.pack(fill="both", expand=True)
-
-    def load_cv():
-        for i in tree_cv.get_children():
-            tree_cv.delete(i)
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MaCV, TenCV, SoTietGiam FROM DM_ChucVu ORDER BY MaCV")
-            for r in cur.fetchall():
-                tree_cv.insert("", tk.END, values=r)
-            cur.close()
-            conn.close()
-
-    def chon_cv(event):
-        sel = tree_cv.selection()
-        if not sel:
-            return
-        r = tree_cv.item(sel[0])["values"]
-        e_macv.delete(0, tk.END)
-        e_macv.insert(0, r[0])
-        e_tencv.delete(0, tk.END)
-        e_tencv.insert(0, r[1])
-        e_giam.delete(0, tk.END)
-        e_giam.insert(0, r[2])
-
-    def luu_cv():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        macv = e_macv.get().strip().upper()
-        tencv = e_tencv.get().strip()
-        try:
-            giam = int(e_giam.get().strip())
-        except ValueError:
-            messagebox.showwarning("Lỗi", "Số tiết giảm phải là số nguyên!", parent=win)
-            return
-        if not macv or not tencv:
-            messagebox.showwarning("Cảnh báo", "Vui lòng nhập Mã CV và Tên chức vụ!", parent=win)
-            return
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO DM_ChucVu (MaCV, TenCV, SoTietGiam) VALUES (%s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE TenCV=VALUES(TenCV), SoTietGiam=VALUES(SoTietGiam)",
-                (macv, tencv, giam)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            load_cv()
-            messagebox.showinfo("Thành công", f"Đã lưu chức vụ '{tencv}'", parent=win)
-
-    def xoa_cv():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        sel = tree_cv.selection()
-        if not sel:
-            return
-        r = tree_cv.item(sel[0])["values"]
-        if not messagebox.askyesno("Xác nhận", f"Xóa chức vụ {r[1]}?", parent=win):
-            return
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM DM_ChucVu WHERE MaCV=%s", (r[0],))
-            conn.commit()
-            cur.close()
-            conn.close()
-            load_cv()
-
-    tree_cv.bind("<<TreeviewSelect>>", chon_cv)
-
-    f_btn = tk.Frame(win)
-    f_btn.pack(pady=8)
-    tk.Button(f_btn, text="Thêm / Lưu", width=12, command=luu_cv).pack(side="left", padx=5)
-    tk.Button(f_btn, text="Xóa", width=10, command=xoa_cv).pack(side="left", padx=5)
-    tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=5)
-
-    load_cv()
-
-
-# --- CỬA SỔ 3: DANH MỤC -> TỔ BỘ MÔN / PHÒNG BAN ---
-def open_danhmuc_phongban():
-    win = tk.Toplevel(root)
-    win.title("Danh mục Tổ chuyên môn / Phòng ban")
-    center_window(win, 620, 440)
-    win.grab_set()
-    win.focus_set()
-
-    tk.Label(win, text="DANH MỤC TỔ CHUYÊN MÔN & PHÒNG BAN",
-             font=("Arial", 13, "bold"), fg="#0d47a1").pack(pady=8)
-
-    f_form = tk.LabelFrame(win, text=" Thông tin Tổ chuyên môn ", padx=10, pady=6)
-    f_form.pack(fill="x", padx=15, pady=4)
-
-    tk.Label(f_form, text="Mã Tổ (*):").grid(row=0, column=0, padx=5, pady=4, sticky="w")
-    e_mato = tk.Entry(f_form, width=14)
-    e_mato.grid(row=0, column=1, padx=5, pady=4, sticky="w")
-
-    tk.Label(f_form, text="Tên Tổ chuyên môn (*):").grid(row=0, column=2, padx=10, pady=4, sticky="w")
-    e_tento = tk.Entry(f_form, width=28)
-    e_tento.grid(row=0, column=3, padx=5, pady=4, sticky="w")
-
-    f_tree = tk.Frame(win)
-    f_tree.pack(fill="both", expand=True, padx=15, pady=5)
-    tree_pb = ttk.Treeview(f_tree, columns=("mato", "tento"), show="headings", height=8)
-    tree_pb.heading("mato",  text="Mã Tổ")
-    tree_pb.heading("tento", text="Tên Tổ Chuyên Môn / Phòng Ban")
-    tree_pb.column("mato",  width=150, anchor="center")
-    tree_pb.column("tento", width=380)
-    tree_pb.pack(fill="both", expand=True)
-
-    def load_pb():
-        for i in tree_pb.get_children():
-            tree_pb.delete(i)
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT MaTo, TenTo FROM DM_ToChuyenMon ORDER BY MaTo")
-            for r in cur.fetchall():
-                tree_pb.insert("", tk.END, values=r)
-            cur.close()
-            conn.close()
-
-    def chon_pb(event):
-        sel = tree_pb.selection()
-        if not sel:
-            return
-        r = tree_pb.item(sel[0])["values"]
-        e_mato.delete(0, tk.END)
-        e_mato.insert(0, r[0])
-        e_tento.delete(0, tk.END)
-        e_tento.insert(0, r[1])
-
-    def luu_pb():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        mato = e_mato.get().strip().upper()
-        tento = e_tento.get().strip()
-        if not mato or not tento:
-            messagebox.showwarning("Cảnh báo", "Vui lòng nhập Mã Tổ và Tên Tổ!", parent=win)
-            return
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO DM_ToChuyenMon (MaTo, TenTo) VALUES (%s, %s) "
-                "ON DUPLICATE KEY UPDATE TenTo=VALUES(TenTo)",
-                (mato, tento)
-            )
-            conn.commit()
-            cur.close()
-            conn.close()
-            load_pb()
-            messagebox.showinfo("Thành công", f"Đã lưu tổ '{tento}'", parent=win)
-
-    def xoa_pb():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        sel = tree_pb.selection()
-        if not sel:
-            return
-        r = tree_pb.item(sel[0])["values"]
-        if not messagebox.askyesno("Xác nhận", f"Xóa tổ {r[1]}?", parent=win):
-            return
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM DM_ToChuyenMon WHERE MaTo=%s", (r[0],))
-            conn.commit()
-            cur.close()
-            conn.close()
-            load_pb()
-
-    tree_pb.bind("<<TreeviewSelect>>", chon_pb)
-
-    f_btn = tk.Frame(win)
-    f_btn.pack(pady=8)
-    tk.Button(f_btn, text="Thêm / Lưu", width=12, command=luu_pb).pack(side="left", padx=5)
-    tk.Button(f_btn, text="Xóa", width=10, command=xoa_pb).pack(side="left", padx=5)
-    tk.Button(f_btn, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=5)
-
-    load_pb()
-
-
-# --- CỬA SỔ 4: NGHIỆP VỤ -> PHÂN CÔNG KIÊM NHIỆM & TÍNH ĐỊNH MỨC GIỜ DẠY ---
-def open_nghiepvu_dinhmuc():
-    win = tk.Toplevel(root)
-    win.title("Nghiệp vụ Phân công kiêm nhiệm & Tính định mức giảng dạy")
-    center_window(win, 920, 560)
-    win.grab_set()
-    win.focus_set()
-
-    tk.Label(win, text="PHÂN CÔNG KIÊM NHIỆM & BẢNG TỔNG HỢP ĐỊNH MỨC GIỜ DẠY",
-             font=("Arial", 13, "bold"), fg="#0d47a1").pack(pady=(8, 2))
-    tk.Label(
-        win,
-        text="Quy chuẩn Bộ GD&ĐT: Định mức chuẩn THPT = 17 tiết/tuần | Tối đa 02 chức vụ kiêm nhiệm/giáo viên (lấy mức giảm cao nhất)",
-        font=("Arial", 9, "italic"), fg="#555"
-    ).pack(pady=(0, 6))
-
-    # Khung phân công kiêm nhiệm (Thao tác trực tiếp bảng QTr_KiemNhiem)
-    f_assign = tk.LabelFrame(win, text=" Phân công kiêm nhiệm / Chế độ giảm trừ (Bảng QTr_KiemNhiem) ",
-                             font=("Arial", 9, "bold"), padx=10, pady=6)
-    f_assign.pack(fill="x", padx=15, pady=4)
-
-    conn = get_db_connection()
-    ds_gv = []
-    ds_cv = []
-    gv_gender_map = {}
-    if conn:
-        cur = conn.cursor()
-        cur.execute("SELECT MaGV, HoTen, GioiTinh FROM HS_GiaoVien ORDER BY MaGV")
-        for mgv, ht, gt in cur.fetchall():
-            ds_gv.append(f"{mgv} - {ht}")
-            gv_gender_map[mgv] = gt
-        cur.execute("SELECT MaCV, TenCV, SoTietGiam FROM DM_ChucVu WHERE MaCV != 'GV' ORDER BY MaCV")
-        for mcv, tcv, giam in cur.fetchall():
-            ds_cv.append(f"{mcv} - {tcv} (-{giam} tiết)")
-        cur.close()
-        conn.close()
-
-    tk.Label(f_assign, text="Chọn Giáo viên:").grid(row=0, column=0, padx=5, pady=4, sticky="w")
-    cbb_gv = ttk.Combobox(f_assign, values=ds_gv, width=30, state="readonly")
-    if ds_gv:
-        cbb_gv.current(0)
-    cbb_gv.grid(row=0, column=1, padx=5, pady=4, sticky="w")
-
-    tk.Label(f_assign, text="Chức vụ / Chế độ:").grid(row=0, column=2, padx=10, pady=4, sticky="w")
-    cbb_cv = ttk.Combobox(f_assign, values=ds_cv, width=34, state="readonly")
-    if ds_cv:
-        cbb_cv.current(0)
-    cbb_cv.grid(row=0, column=3, padx=5, pady=4, sticky="w")
-
-    # Bảng tổng hợp định mức
-    f_tree = tk.Frame(win)
-    f_tree.pack(fill="both", expand=True, padx=15, pady=6)
-    tree_nv = ttk.Treeview(
-        f_tree,
-        columns=("magv", "hoten", "to", "trinhdo", "chucvu", "tieuchuan", "giam", "thucday"),
-        show="headings", height=10
+    btn_them = tk.Button(f_btn, text="Thêm",      width=10, command=them_gv)
+    btn_sua  = tk.Button(f_btn, text="Sửa / Lưu", width=10, command=sua_gv)
+    btn_xoa  = tk.Button(f_btn, text="Xóa",       width=10, command=xoa_gv)
+    btn_moi  = tk.Button(f_btn, text="Làm mới",   width=10, command=clear_form)
+    btn_kn   = tk.Button(
+        f_btn, text="Kiêm nhiệm", width=12, bg="#0d47a1", fg="white",
+        font=("Arial", 9, "bold"), command=lambda: open_kiemnhiem(entry_magv.get().strip())
     )
-    tree_nv.heading("magv",      text="Mã GV")
-    tree_nv.heading("hoten",     text="Họ và Tên")
-    tree_nv.heading("to",        text="Tổ Chuyên Môn")
-    tree_nv.heading("trinhdo",   text="Trình Độ")
-    tree_nv.heading("chucvu",    text="Chức Vụ / Chế Độ Kiêm Nhiệm")
-    tree_nv.heading("tieuchuan", text="Tiêu Chuẩn")
-    tree_nv.heading("giam",      text="Giảm Trừ")
-    tree_nv.heading("thucday",   text="Thực Dạy/Tuần")
+    btn_xuat = tk.Button(
+        f_btn, text="Xuất Excel", width=12, bg="#27ae60", fg="white",
+        font=("Arial", 9, "bold"), command=lambda: xuat_excel(root)
+    )
 
-    tree_nv.column("magv",      width=65,  anchor="center")
-    tree_nv.column("hoten",     width=150)
-    tree_nv.column("to",        width=110)
-    tree_nv.column("trinhdo",   width=110)
-    tree_nv.column("chucvu",    width=210)
-    tree_nv.column("tieuchuan", width=75,  anchor="center")
-    tree_nv.column("giam",      width=70,  anchor="center")
-    tree_nv.column("thucday",   width=90,  anchor="center")
+    btn_them.grid(row=0, column=0, padx=5)
+    btn_sua.grid(row=0,  column=1, padx=5)
+    btn_xoa.grid(row=0,  column=2, padx=5)
+    btn_moi.grid(row=0,  column=3, padx=5)
+    btn_kn.grid(row=0,   column=4, padx=5)
+    btn_xuat.grid(row=0, column=5, padx=5)
 
-    sb = ttk.Scrollbar(f_tree, orient="vertical", command=tree_nv.yview)
-    tree_nv.configure(yscrollcommand=sb.set)
-    sb.pack(side="right", fill="y")
-    tree_nv.pack(fill="both", expand=True)
+    # THANH MENU
+    def dang_xuat():
+        root.destroy()
+        mo_cua_so_dang_nhap()
 
-    def load_bang_dinh_muc():
-        for i in tree_nv.get_children():
-            tree_nv.delete(i)
+    menubar = tk.Menu(root)
+
+    menu_hethong = tk.Menu(menubar, tearoff=0)
+    menu_hethong.add_command(label="Làm mới dữ liệu",   command=load_data_chinh)
+    menu_hethong.add_command(label="Xuất Excel",        command=lambda: xuat_excel(root))
+    menu_hethong.add_separator()
+    menu_hethong.add_command(label="Đổi mật khẩu",      command=open_doi_mat_khau)
+    menu_hethong.add_command(label="Quản lý tài khoản", command=open_quanly_taikhoan)
+    menu_hethong.add_separator()
+    menu_hethong.add_command(label="Đăng xuất",         command=dang_xuat)
+    menu_hethong.add_command(label="Thoát",             command=root.destroy)
+    menubar.add_cascade(label="Hệ thống", menu=menu_hethong)
+
+    menu_danhmuc = tk.Menu(menubar, tearoff=0)
+    menu_danhmuc.add_command(label="Tổ chuyên môn", command=open_danhmuc_to)
+    menu_danhmuc.add_command(label="Chức vụ",       command=open_danhmuc_chucvu)
+    menubar.add_cascade(label="Danh mục", menu=menu_danhmuc)
+
+    menu_nghiepvu = tk.Menu(menubar, tearoff=0)
+    menu_nghiepvu.add_command(label="Phân công kiêm nhiệm", command=open_kiemnhiem)
+    menu_nghiepvu.add_command(label="Đổi tiền tố mã",       command=open_doi_tien_to)
+    menubar.add_cascade(label="Nghiệp vụ", menu=menu_nghiepvu)
+
+    menu_trogiup = tk.Menu(menubar, tearoff=0)
+    menu_trogiup.add_command(
+        label="Thông tin",
+        command=lambda: messagebox.showinfo(
+            "Thông tin",
+            "Phần mềm Quản lý Giáo viên Phổ thông\n\n"
+            "Thực hiện:\n"
+            "- Nguyễn Huỳnh Nhựt Tân (DTH245880)\n"
+            "- Nguyễn Trọng Tín (DTH245912)",
+            parent=root
+        )
+    )
+    menu_trogiup.add_command(
+        label="Hướng dẫn sử dụng",
+        command=lambda: messagebox.showinfo(
+            "Hướng dẫn",
+            "1. Nhập thông tin giáo viên vào các ô trên cùng.\n"
+            "2. Nhấn 'Thêm' để thêm giáo viên mới.\n"
+            "3. Chọn giáo viên từ bảng để sửa hoặc xóa.\n"
+            "4. Nhấn nút '+' cạnh Combobox để thêm tổ bộ môn / trình độ.\n"
+            "5. Vào Hệ thống -> Đổi mật khẩu để thay đổi mật khẩu cá nhân.",
+            parent=root
+        )
+    )
+    menubar.add_cascade(label="Trợ giúp", menu=menu_trogiup)
+
+    root.config(menu=menubar)
+
+    # GIAI ĐOẠN 4: PHÂN QUYỀN GIAO DIỆN (ROLE-BASED UI)
+    if role != "admin":
+        btn_them.config(state="disabled")
+        btn_sua.config(state="disabled")
+        btn_xoa.config(state="disabled")
+        btn_kn.config(state="disabled", bg="#9e9e9e")
+        btn_them_to.config(state="disabled")
+        btn_them_td.config(state="disabled")
+        menu_hethong.entryconfig("Quản lý tài khoản", state="disabled")
+        menubar.entryconfig("Danh mục", state="disabled")
+        menubar.entryconfig("Nghiệp vụ", state="disabled")
+
+    load_data_chinh()
+    root.mainloop()
+
+
+# 4. GIAI ĐOẠN 1, 2 , 3: CỬA SỔ ĐĂNG NHẬP, XÁC THỰC NGƯỜI DÙNG
+def mo_cua_so_dang_nhap():
+    login_win = tk.Tk()
+    login_win.title("Đăng nhập hệ thống")
+    center_window(login_win, 370, 210)
+    login_win.resizable(False, False)
+
+    tk.Label(login_win, text="ĐĂNG NHẬP HỆ THỐNG", font=("Arial", 13, "bold"), fg="#0d47a1").pack(pady=(16, 10))
+
+    f_input = tk.Frame(login_win, padx=20)
+    f_input.pack(fill="x")
+
+    tk.Label(f_input, text="Tài khoản:", width=11, anchor="w").grid(row=0, column=0, pady=6)
+    e_user = tk.Entry(f_input, width=25)
+    e_user.insert(0, "admin")
+    e_user.grid(row=0, column=1, pady=6)
+
+    tk.Label(f_input, text="Mật khẩu:", width=11, anchor="w").grid(row=1, column=0, pady=6)
+    e_pass = tk.Entry(f_input, width=25, show="*")
+    e_pass.insert(0, "123456")
+    e_pass.grid(row=1, column=1, pady=6)
+
+    def xu_ly_dang_nhap(event=None):
+        username = e_user.get().strip()
+        password = e_pass.get().strip()
+        if not username or not password:
+            messagebox.showwarning("Chú ý", "Vui lòng nhập đầy đủ tài khoản và mật khẩu!", parent=login_win)
+            return
+
         conn = get_db_connection()
-        if not conn:
-            return
-        to_map = lay_ds_to()
-        cur = conn.cursor()
-        cur.execute("SELECT MaGV, HoTen, MaTo, TrinhDo FROM HS_GiaoVien ORDER BY MaGV")
-        rows = cur.fetchall()
-        cur.close()
-        for magv, hoten, mato, trinhdo in rows:
-            cv_str, giam, day = lay_thong_tin_kiem_nhiem(conn, magv)
-            td = trinhdo if trinhdo else "Cử nhân Sư phạm"
-            tree_nv.insert("", tk.END, values=(
-                magv, hoten, to_map.get(mato, mato), td,
-                cv_str, f"{DINH_MUC_CHUAN} tiết", f"-{giam} tiết", f"{day} tiết"
-            ))
-        conn.close()
-
-    def them_kiem_nhiem():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        if not cbb_gv.get() or not cbb_cv.get():
-            return
-        magv = cbb_gv.get().split(" - ")[0].strip()
-        macv = cbb_cv.get().split(" - ")[0].strip()
-
-        # Kiểm tra điều kiện giới tính cho chế độ CON (< 12 tháng tuổi)
-        if macv == "CON" and gv_gender_map.get(magv) == "Nam":
-            messagebox.showwarning(
-                "Vi phạm quy tắc nghiệp vụ",
-                "Chế độ 'Giáo viên nữ có con < 12 tháng' chỉ áp dụng cho giáo viên Nữ!",
-                parent=win
-            )
-            return
-
-        conn = get_db_connection()
-        if not conn:
+        if conn is None:
             return
         cur = conn.cursor()
         try:
-            # Thuật toán đếm COUNT trên bảng QTr_KiemNhiem (Mục 3.2.5 báo cáo): Tối đa 02 chức vụ
-            cur.execute("SELECT COUNT(*) FROM QTr_KiemNhiem WHERE MaGV = %s", (magv,))
-            so_luong = cur.fetchone()[0]
-            if so_luong >= 2:
-                messagebox.showwarning(
-                    "Vượt quá giới hạn kiêm nhiệm",
-                    f"Giáo viên {magv} hiện đã kiêm nhiệm {so_luong} chức vụ!\n"
-                    "Theo quy định, mỗi giáo viên không được phân công kiêm nhiệm quá 02 chức vụ.",
-                    parent=win
-                )
-                return
-
-            cur.execute("INSERT INTO QTr_KiemNhiem (MaGV, MaCV) VALUES (%s, %s)", (magv, macv))
-            conn.commit()
-            load_bang_dinh_muc()
-            messagebox.showinfo("Thành công", f"Đã phân công chức vụ '{macv}' cho giáo viên {magv}!", parent=win)
-        except mysql.connector.IntegrityError:
-            conn.rollback()
-            messagebox.showwarning("Trùng phân công", f"Giáo viên {magv} đã có chức vụ '{macv}' rồi!", parent=win)
+            # Giai đoạn 2: Truy vấn tài khoản và đối chiếu mật khẩu Hash SHA-256
+            cur.execute("SELECT MatKhau, Quyen FROM TaiKhoan WHERE TenDangNhap = %s", (username,))
+            row = cur.fetchone()
         finally:
             cur.close()
             conn.close()
 
-    def xoa_kiem_nhiem():
-        if not kiem_tra_quyen_ghi(win):
-            return
-        if not cbb_gv.get():
-            return
-        magv = cbb_gv.get().split(" - ")[0].strip()
-        if not messagebox.askyesno("Xác nhận", f"Xóa toàn bộ chức vụ kiêm nhiệm của giáo viên {magv}?", parent=win):
-            return
-        conn = get_db_connection()
-        if conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM QTr_KiemNhiem WHERE MaGV = %s", (magv,))
-            conn.commit()
-            cur.close()
-            conn.close()
-            load_bang_dinh_muc()
-            messagebox.showinfo("Đã xóa", f"Đã đưa giáo viên {magv} về định mức Giáo viên bộ môn (17 tiết).", parent=win)
+        # Giai đoạn 3: Xử lý kết quả đăng nhập
+        if row and row[0] == ma_hoa_mk(password):
+            role = row[1]
+            login_win.destroy()
+            mo_man_hinh_chinh(role=role, username=username)
+        else:
+            messagebox.showerror("Lỗi đăng nhập", "Sai tài khoản hoặc mật khẩu!", parent=login_win)
 
-    def chon_dong_nv(event):
-        sel = tree_nv.selection()
-        if not sel:
-            return
-        magv = tree_nv.item(sel[0])["values"][0]
-        for item in ds_gv:
-            if item.startswith(f"{magv} -"):
-                cbb_gv.set(item)
-                break
+    e_pass.bind("<Return>", xu_ly_dang_nhap)
 
-    tree_nv.bind("<<TreeviewSelect>>", chon_dong_nv)
+    f_btn = tk.Frame(login_win)
+    f_btn.pack(pady=12)
+    tk.Button(
+        f_btn, text="Đăng nhập", width=12, bg="#0d47a1", fg="white",
+        font=("Arial", 9, "bold"), command=xu_ly_dang_nhap
+    ).pack(side="left", padx=6)
+    tk.Button(f_btn, text="Thoát", width=10, command=login_win.destroy).pack(side="left", padx=6)
 
-    f_btn_assign = tk.Frame(f_assign)
-    f_btn_assign.grid(row=1, column=0, columnspan=4, pady=6)
-    tk.Button(f_btn_assign, text="Gán kiêm nhiệm", width=15, bg="#0d47a1", fg="white",
-              font=("Arial", 9, "bold"), command=them_kiem_nhiem).pack(side="left", padx=5)
-    tk.Button(f_btn_assign, text="Xóa kiêm nhiệm của GV", width=20,
-              command=xoa_kiem_nhiem).pack(side="left", padx=5)
-
-    f_action = tk.Frame(win)
-    f_action.pack(pady=8)
-    tk.Button(f_action, text="Xuất Báo Cáo Excel", width=18,
-              bg="#27ae60", fg="white", font=("Arial", 9, "bold"),
-              command=lambda: xuat_excel(win)).pack(side="left", padx=6)
-    tk.Button(f_action, text="Đóng", width=10, command=win.destroy).pack(side="left", padx=6)
-
-    load_bang_dinh_muc()
+    login_win.mainloop()
 
 
-# --- BÁO CÁO ---
-def open_baocao_ds():
-    open_quanly_giaovien()
-
-
-def open_baocao_tonghop():
-    open_nghiepvu_dinhmuc()
-
-
-# --- GIÚP ĐỠ ---
-def show_huongdan():
-    messagebox.showinfo(
-        "Hướng dẫn sử dụng",
-        "HƯỚNG DẪN SỬ DỤNG HỆ THỐNG:\n\n"
-        "1. Chương trình → Đăng nhập / Đăng xuất (Tài khoản mẫu: admin / 123456).\n"
-        "   Tự động khóa nếu nhập sai mật khẩu quá 5 lần.\n"
-        "2. Danh mục → Nhân viên / Giáo viên: Thêm, Sửa, Xóa, Tìm kiếm, Lọc theo Tổ.\n"
-        "3. Danh mục → Chức vụ / Phòng ban: Quản lý danh mục tổ và mức giảm trừ tiết.\n"
-        "4. Nghiệp vụ → Phân công kiêm nhiệm & Định mức: Gán kiêm nhiệm (tối đa 02 chức vụ/GV) và tính tiết thực dạy tự động.\n"
-        "5. Báo cáo → Xuất Excel: Xuất bảng tổng hợp ra tập tin CSV mở trực tiếp bằng Excel.",
-        parent=root
-    )
-
-
-def show_thongtin():
-    messagebox.showinfo(
-        "Thông tin đồ án",
-        "ĐỒ ÁN CHUYÊN ĐỀ PYTHON (COS525)\n"
-        "Đề tài: Xây dựng ứng dụng Quản lý giáo viên phổ thông\n\n"
-        "GVHD: ThS. Nguyễn Ngọc Minh\n"
-        "Nhóm thực hiện:\n"
-        "  - Nguyễn Huỳnh Nhựt Tân (DTH245880)\n"
-        "  - Nguyễn Trọng Tín (DTH245912)\n"
-        "Lớp: DH25TH3 - Nhóm 14 - Tổ 1\n"
-        "Trường Đại học An Giang - ĐHQG-HCM",
-        parent=root
-    )
-
-
-# ==============================================================================
-# 7. MENU BAR (5 menu theo đúng ảnh mẫu của Thầy Nguyễn Ngọc Minh)
-# ==============================================================================
-menubar = tk.Menu(root)
-
-# 1. Chương trình
-menu_chuongtrinh = tk.Menu(menubar, tearoff=0)
-menu_chuongtrinh.add_command(label="Đăng nhập / Đổi tài khoản", command=open_dangnhap)
-menu_chuongtrinh.add_command(label="Đăng xuất",                 command=xu_ly_dangxuat)
-menu_chuongtrinh.add_separator()
-menu_chuongtrinh.add_command(label="Thoát",                     command=root.quit)
-menubar.add_cascade(label="Chương trình", menu=menu_chuongtrinh)
-
-# 2. Danh mục
-menu_danhmuc = tk.Menu(menubar, tearoff=0)
-menu_danhmuc.add_command(label="Nhân viên / Giáo viên",   command=open_quanly_giaovien)
-menu_danhmuc.add_command(label="Chức vụ",                 command=open_danhmuc_chucvu)
-menu_danhmuc.add_command(label="Phòng ban / Tổ bộ môn",   command=open_danhmuc_phongban)
-menubar.add_cascade(label="Danh mục", menu=menu_danhmuc)
-
-# 3. Nghiệp vụ
-menu_nghiepvu = tk.Menu(menubar, tearoff=0)
-menu_nghiepvu.add_command(label="Phân công kiêm nhiệm & Định mức (Quá trình lương)",
-                          command=open_nghiepvu_dinhmuc)
-menubar.add_cascade(label="Nghiệp vụ", menu=menu_nghiepvu)
-
-# 4. Báo cáo
-menu_baocao = tk.Menu(menubar, tearoff=0)
-menu_baocao.add_command(label="Danh sách giáo viên",       command=open_baocao_ds)
-menu_baocao.add_command(label="Tổng hợp định mức giờ dạy", command=open_baocao_tonghop)
-menu_baocao.add_separator()
-menu_baocao.add_command(label="Xuất danh sách ra Excel",   command=lambda: xuat_excel(root))
-menubar.add_cascade(label="Báo cáo", menu=menu_baocao)
-
-# 5. Giúp đỡ
-menu_giupdo = tk.Menu(menubar, tearoff=0)
-menu_giupdo.add_command(label="Hướng dẫn", command=show_huongdan)
-menu_giupdo.add_command(label="Thông tin", command=show_thongtin)
-menubar.add_cascade(label="Giúp đỡ", menu=menu_giupdo)
-
-root.config(menu=menubar)
-
-# ==============================================================================
-# 8. KHỞI ĐỘNG HỆ THỐNG
-# ==============================================================================
-init_db()
-
-root.mainloop()
+if __name__ == "__main__":
+    init_db()
+    mo_cua_so_dang_nhap()
