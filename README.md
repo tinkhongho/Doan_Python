@@ -5,5 +5,5 @@
 
 ## Hướng dẫn cài đặt
 1. Cài đặt các thư viện: `pip install mysql-connector-python tkcalendar `
-2. Import file `database.sql` vào MySQL Workbench (nếu dùng MySQL).
+2. Import file `database.sql` hoặc execute file `sql_mysql` vào MySQL Workbench (nếu dùng MySQL).
 3. Chạy file `app_qlgiaovien_mysql.py` để mở phần mềm.
