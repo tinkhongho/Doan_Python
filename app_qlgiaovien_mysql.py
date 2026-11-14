@@ -1520,12 +1520,12 @@ def mo_cua_so_dang_nhap():
 
     tk.Label(f_input, text="Tài khoản:", width=11, anchor="w").grid(row=0, column=0, pady=6)
     e_user = tk.Entry(f_input, width=25)
-    e_user.insert(0, "admin")
+    #e_user.insert(0, "admin")
     e_user.grid(row=0, column=1, pady=6)
 
     tk.Label(f_input, text="Mật khẩu:", width=11, anchor="w").grid(row=1, column=0, pady=6)
     e_pass = tk.Entry(f_input, width=25, show="*")
-    e_pass.insert(0, "123456")
+    #e_pass.insert(0, "123456")
     e_pass.grid(row=1, column=1, pady=6)
 
     def xu_ly_dang_nhap(event=None):
